@@ -7,14 +7,36 @@
 #define NTPB 256
 #define NB ((N_PATHS + NTPB - 1) / NTPB)
 #define N_MAT 101
-#define SAVE_STRIDE (N_STEPS / (N_MAT - 1)) // 10 steps per maturity
+#define SAVE_STRIDE (N_STEPS / (N_MAT - 1)) 
+#define T 10.0f
 
+__constant__ float a; // mean reversion speed
+__constant__ float sigma;// volatility
+__constant__ float r0; // initial short rate
+__constant__ float dt; // time step size (0.01 years for 1000 steps over 10 years)
+__constant__ float exp_adt; // precomputed e^{-a*dt}
+__constant__ float sig_st; // precomputed sigma_{s,t}
+__constant__ float one_minus_exp_adt_over_a; // precomputed (1-e^{-a*dt})/a
 
-__constant__ float a = 1.0f; // mean reversion speed
-__constant__ float sigma = 0.1f; // volatility
-__constant__ float r0 = 0.012f; // initial short rate
-__constant__ float dt = 10.0f / N_STEPS; // time step size (0.01 years for 1000 steps over 10 years)
+// Precompute constants and copy to device constant memory
+void compute_constants() {
+    const float DT = (T / N_STEPS);
+    const float A = 1.0f;
+    const float SIGMA = 0.1f;
+    const float R0 = 0.012f;
 
+    float h_exp_adt = expf(-A * DT);
+    float h_sig_st = SIGMA * sqrtf((1.0f - expf(-2.0f * A * DT)) / (2.0f * A));
+    float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / A;
+
+    cudaMemcpyToSymbol(a, &A, sizeof(float));
+    cudaMemcpyToSymbol(sigma, &SIGMA, sizeof(float));
+    cudaMemcpyToSymbol(r0, &R0, sizeof(float));
+    cudaMemcpyToSymbol(dt, &DT, sizeof(float));
+    cudaMemcpyToSymbol(exp_adt, &h_exp_adt, sizeof(float));
+    cudaMemcpyToSymbol(sig_st, &h_sig_st, sizeof(float));
+    cudaMemcpyToSymbol(one_minus_exp_adt_over_a, &h_one_minus_exp_adt_over_a, sizeof(float));
+}
 
 
 // Time-dependent theta function 
@@ -34,10 +56,6 @@ __global__ void simulate_q1(float* P_sum, curandState* states) {
     if (pid >= N_PATHS) return; 
     
     curandState local = states[pid];  // local (on each thread's private memory) copy of RNG state
-    
-    float exp_adt = expf(-a * dt); // e^{-a*dt}
-    // volatility of r(t+dt)
-    float sig_st = sigma * sqrtf((1.0f - expf(-2.0f * a * dt)) / (2.0f * a));
 
     // base case: T=0 means P(0,0) = 1
     atomicAdd(&P_sum[0], 1.0f);
@@ -46,28 +64,21 @@ __global__ void simulate_q1(float* P_sum, curandState* states) {
     // to calculate the integral of r(t) from 0 to T
     float integral = 0.0f;
 
-    // Simulate path from 0 to T (Max Maturity) in one cycle
+    // Simulate path from 0 to T = 10
     for (int i = 1; i <= N_STEPS; i++) {
         float t = (i - 1) * dt; // current time at start of step
         float theta_t = theta(t);
 
-        /*
-        m_{s,t} =r(t)*e^{-a*dt} + theta(t)*(1 - e^{-a*dt})/a
-        
+        /*      
         Expected value of r(t+dt) given r(t)
 
-        1. r*e^{-a*dt}: old rate decays exponentially
-        2. theta(t)*(1-e^{-a*dt})/a: pull towards mean reversion level theta(t)
+        - r*e^{-a*dt}: old rate decays exponentially
+        - theta(t)*(1-e^{-a*dt})/a: pull towards mean reversion level theta(t)
         */
-        float m_st = r * exp_adt + theta_t * (1.0f - exp_adt) / a;
+        float m_st = r * exp_adt + theta_t * one_minus_exp_adt_over_a;
 
-        // sigma_{s,t} = sigma * sqrt((1 - e^{-2a * dt})/(2a))            
-        // Sample from N(m_{s,t}, sigma_{s,t}^2)
         // r(t+dt) = m_{s,t} + sigma_{s,t}*G, where G ~ N(0,1)
-        // curand_normal generates standard normal variable
-        // The bell curve around m_st has width sig_st
-        // Random G determines where in the curve we land
-        float G = curand_normal(&local); // NOTE: this is the only place in the code that has (minimal) divergence 
+        float G = curand_normal(&local);
         float r_next = m_st + sig_st * G;
 
         // Trapezoidal rule (inherently sequential)
@@ -81,8 +92,6 @@ __global__ void simulate_q1(float* P_sum, curandState* states) {
             if (m < N_MAT) {
                 // Discount factor
                 float discount = expf(-integral);
-
-                // must use atomic add since multiple threads write to same location
                 atomicAdd(&P_sum[m], discount);
             }
         }
@@ -119,6 +128,9 @@ int main() {
     
     cudaDeviceSynchronize();
     printf("RNG initialized\n");
+
+    // Precompute simulation constants
+    compute_constants();
     
     // Run simulation
     printf("Running simulation...\n");
