@@ -1,8 +1,6 @@
-# Monte-Carlo-simulation-of-Hull-White-model-and-sensitivities-computation
+# Monte Carlo Simulation of Hull-White Model and Sensitivities Computation
 
-## project overview
-
-The objective of this project is to implement Monte Carlo simulation for pricing and sensitivity analysis of fixed income instruments under the Hull-White one-factor short-rate model using CUDA.
+## Project Overview
 
 This project implements Monte Carlo simulation for pricing and sensitivity analysis of fixed income instruments under the Hull-White one-factor short-rate model using CUDA.
 
@@ -12,161 +10,142 @@ This project implements Monte Carlo simulation for pricing and sensitivity analy
 
 The short-rate model is defined by the stochastic differential equation:
 
-```
-dr(t) = [θ(t) - ar(t)]dt + σdW_t
-```
+$$dr(t) = [\theta(t) - ar(t)]dt + \sigma dW_t$$
 
 **Parameters:**
-- `r(0) = 0.012` (initial short rate)
-- `a = 1` (mean reversion speed)
-- `σ = 0.1` (volatility)
-- `θ(t)` (piecewise linear function defined on [0, 10]):
-  ```
-  θ(t) = [0.012 + 0.0014·t]  for 0 ≤ t < 5
-         [0.019 + 0.001·(t-5)] for 5 ≤ t ≤ 10
-  ```
+- $r(0) = 0.012$ (initial short rate)
+- $a = 1$ (mean reversion speed)
+- $\sigma = 0.1$ (volatility)
+- $\theta(t)$ (piecewise linear function defined on $[0, 10]$):
+
+$$\theta(t) = \begin{cases}
+0.012 + 0.0014t & \text{for } 0 \leq t < 5 \\
+0.019 + 0.001(t-5) & \text{for } 5 \leq t \leq 10
+\end{cases}$$
 
 ### Simulation Formula
 
-The short rate r(t) at time t, given its value r_s at time s < t, follows a Gaussian distribution:
+The short rate $r(t)$ at time $t$, given its value $r_s$ at time $s < t$, follows a Gaussian distribution:
 
-```
-r(t) = m_{s,t} + Σ_{s,t}·G
-```
+$$r(t) = m_{s,t} + \Sigma_{s,t} G$$
 
-where G ~ N(0,1) and:
+where $G \sim \mathcal{N}(0,1)$ and:
 
-```
-m_{s,t} = r(s)·e^{-a(t-s)} + ∫_s^t e^{-a(t-u)}θ(u)du
+$$m_{s,t} = r(s)e^{-a(t-s)} + \int_s^t e^{-a(t-u)}\theta(u)du$$
 
-Σ_{s,t} = √[σ²(1 - e^{-2a(t-s)})/(2a)]
-```
+$$\Sigma_{s,t} = \sqrt{\frac{\sigma^2(1 - e^{-2a(t-s)})}{2a}}$$
 
 ### Zero Coupon Bond Pricing
 
-The zero coupon bond price represents the amount to pay at time t to receive 1 at maturity T:
+The zero coupon bond price represents the amount to pay at time $t$ to receive 1 at maturity $T$:
 
-```
-P(t,T) = E_t[exp(-∫_t^T r_s ds)]
-```
+$$P(t,T) = \mathbb{E}_t\left[\exp\left(-\int_t^T r_s ds\right)\right]$$
 
 **Forward Rate:**
-```
-f(0,T) = ∂ln(P(0,T))/∂T
-```
+
+$$f(0,T) = \frac{\partial \ln(P(0,T))}{\partial T}$$
 
 **Analytical Expression (Hull-White):**
-```
-P(t,T) = A(t,T)·exp(-B(t,T)·r(t))
+
+$$P(t,T) = A(t,T) \exp(-B(t,T)r(t))$$
 
 where:
-B(t,T) = (1 - e^{-a(T-t)})/a
 
-A(t,T) = [P(0,T)/P(0,t)]·exp[B(t,T)·f(0,t) - σ²(1-e^{-2aT})·B(t,T)²/(4a)]
-```
+$$B(t,T) = \frac{1 - e^{-a(T-t)}}{a}$$
+
+$$A(t,T) = \frac{P(0,T)}{P(0,t)} \exp\left[B(t,T)f(0,t) - \frac{\sigma^2(1-e^{-2aT})}{4a}B(t,T)^2\right]$$
 
 ### Calibration Formula
 
-In practice, P(0,T) values are market-quoted, and θ is recovered using:
+In practice, $P(0,T)$ values are market-quoted, and $\theta$ is recovered using:
 
-```
-θ(T) = ∂f(0,T)/∂T + a·f(0,T) + σ²(1-e^{-2aT})/(2a)
-```
+$$\theta(T) = \frac{\partial f(0,T)}{\partial T} + af(0,T) + \frac{\sigma^2(1-e^{-2aT})}{2a}$$
 
 ### Zero Coupon Bond Call Option
 
 European call option on a zero coupon bond:
 
-```
-ZBC(S₁, S₂, K) = E[e^{-∫_0^{S₁} r_s ds}·(P(S₁,S₂) - K)⁺]
-```
+$$\text{ZBC}(S_1, S_2, K) = \mathbb{E}\left[e^{-\int_0^{S_1} r_s ds}(P(S_1,S_2) - K)^+\right]$$
 
-where (x)⁺ = max(x, 0) and 0 < S₁ < S₂ ≤ 10.
+where $(x)^+ = \max(x, 0)$ and $0 < S_1 < S_2 \leq 10$.
 
 ### Sensitivity (Greeks)
 
-Derivative with respect to volatility σ:
+Derivative with respect to volatility $\sigma$:
 
-```
-∂_σ ZBC(S₁,S₂,K) = E[∂_σ P(S₁,S₂)·e^{-∫_0^{S₁} r_s ds}·1_{P(S₁,S₂)>K}
-                      - [∫_0^{S₁} ∂_σ r_s ds]·e^{-∫_0^{S₁} r_s ds}·(P(S₁,S₂)-K)⁺]
-```
+$$\frac{\partial}{\partial\sigma}\text{ZBC}(S_1,S_2,K) = \mathbb{E}\left[\frac{\partial P(S_1,S_2)}{\partial\sigma} e^{-\int_0^{S_1} r_s ds}\mathbf{1}_{P(S_1,S_2)>K} - \left[\int_0^{S_1} \frac{\partial r_s}{\partial\sigma} ds\right]e^{-\int_0^{S_1} r_s ds}(P(S_1,S_2)-K)^+\right]$$
 
-where ∂_σ r(t) follows the induction:
+where $\frac{\partial r(t)}{\partial\sigma}$ follows the induction:
 
-```
-∂_σ r(t) = M_{s,t} + (Σ_{s,t}/σ)·G
+$$\frac{\partial r(t)}{\partial\sigma} = M_{s,t} + \frac{\Sigma_{s,t}}{\sigma}G$$
 
-M_{s,t} = ∂_σ r(s)·e^{-a(t-s)} + 2σe^{-at}[cosh(at) - cosh(as)]/a²
+$$M_{s,t} = \frac{\partial r(s)}{\partial\sigma}e^{-a(t-s)} + \frac{2\sigma e^{-at}[\cosh(at) - \cosh(as)]}{a^2}$$
 
-∂_σ r(0) = 0
-```
+$$\frac{\partial r(0)}{\partial\sigma} = 0$$
 
 ## Project Tasks
 
 ### Question 1: Monte Carlo for Zero Coupon Bonds (8 points)
 
-**Objective:** Compute Monte Carlo estimates of P(0,T) and f(0,T) for T ∈ [0,10]
+**Objective:** Compute Monte Carlo estimates of $P(0,T)$ and $f(0,T)$ for $T \in [0,10]$
 
 **Requirements:**
 - Implement CUDA kernel for short-rate simulation using equation (8)
-- Use trapezoidal rule on uniform time grid to approximate ∫_0^T r_s ds
-- Compute both bond prices P(0,T) and forward rates f(0,T)
+- Use trapezoidal rule on uniform time grid to approximate $\int_0^T r_s ds$
+- Compute both bond prices $P(0,T)$ and forward rates $f(0,T)$
 - Generate results for a range of maturities
 
 **Key Implementation Details:**
-- Discretize time interval [0,10] uniformly
+- Discretize time interval $[0,10]$ uniformly
 - For each Monte Carlo path:
-  - Simulate r(t) trajectory using Gaussian increments
+  - Simulate $r(t)$ trajectory using Gaussian increments
   - Accumulate integral using trapezoidal rule
-  - Compute exp(-∫_0^T r_s ds)
-- Average over all paths to get P(0,T)
-- Compute forward rate using finite differences: f(0,T) ≈ ∂ln(P(0,T))/∂T
+  - Compute $\exp\left(-\int_0^T r_s ds\right)$
+- Average over all paths to get $P(0,T)$
+- Compute forward rate using finite differences: $f(0,T) \approx \frac{\partial \ln(P(0,T))}{\partial T}$
 
 ### Question 2: Calibration and Option Pricing
 
 #### 2a) Calibration 
 
-**Objective:** Recover the piecewise linear θ(t) from equation (7) using market data
+**Objective:** Recover the piecewise linear $\theta(t)$ from equation (7) using market data
 
 **Requirements:**
-- Use P(0,T) and f(0,T) values from Question 1
+- Use $P(0,T)$ and $f(0,T)$ values from Question 1
 - Implement CUDA kernel to apply calibration formula (10)
-- Verify recovered θ(t) matches the specified piecewise linear form
+- Verify recovered $\theta(t)$ matches the specified piecewise linear form
 
 **Implementation:**
-- Compute ∂f(0,T)/∂T numerically from grid of f values
-- Apply formula: θ(T) = ∂f(0,T)/∂T + a·f(0,T) + σ²(1-e^{-2aT})/(2a)
+- Compute $\frac{\partial f(0,T)}{\partial T}$ numerically from grid of $f$ values
+- Apply formula: $\theta(T) = \frac{\partial f(0,T)}{\partial T} + af(0,T) + \frac{\sigma^2(1-e^{-2aT})}{2a}$
 
 #### 2b) Option Pricing 
 
-**Objective:** Price the zero coupon bond call option ZBC(5, 10, e^{-0.1})
+**Objective:** Price the zero coupon bond call option $\text{ZBC}(5, 10, e^{-0.1})$
 
 **Requirements:**
-- Use analytical formula for P(t,T)
-- Simulate r(t) trajectories from t=0 to t=5
-- Approximate integral ∫_0^5 r_s ds using trapezoidal rule
-- Compute option payoff: e^{-∫_0^5 r_s ds}·(P(5,10) - e^{-0.1})⁺
+- Use analytical formula for $P(t,T)$
+- Simulate $r(t)$ trajectories from $t=0$ to $t=5$
+- Approximate integral $\int_0^5 r_s ds$ using trapezoidal rule
+- Compute option payoff: $e^{-\int_0^5 r_s ds} \cdot (P(5,10) - e^{-0.1})^+$
 - Average over Monte Carlo paths
 
-### Question 3: Sensitivity Analysis
-
-**Objective:** Compute ∂_σ ZBC(5, 10, e^{-0.1}) and validate with finite differences
+### Question 3: Sensitivity Analysis 
+**Objective:** Compute $\frac{\partial}{\partial\sigma}\text{ZBC}(5, 10, e^{-0.1})$ and validate with finite differences
 
 **Requirements:**
 - Implement pathwise derivative method
-- Simulate both r(t) and ∂_σ r(t) along the same paths using same random numbers
+- Simulate both $r(t)$ and $\frac{\partial r(t)}{\partial\sigma}$ along the same paths using same random numbers
 - Compute sensitivity using the analytical derivative formula
 - **Validation:** Compare with finite difference approximation:
-  ```
-  [ZBC(σ + ε) - ZBC(σ - ε)]/(2ε)  for small ε
-  ```
+  
+  $$\frac{\text{ZBC}(\sigma + \varepsilon) - \text{ZBC}(\sigma - \varepsilon)}{2\varepsilon} \quad \text{for small } \varepsilon$$
 
 **Implementation Details:**
-- Initialize ∂_σ r(0) = 0
-- At each time step, update both r(t) and ∂_σ r(t) using the same G
-- Compute ∂_σ P(S₁,S₂) using chain rule on analytical formula
-- Accumulate ∫_0^{S₁} ∂_σ r_s ds using trapezoidal rule
+- Initialize $\frac{\partial r(0)}{\partial\sigma} = 0$
+- At each time step, update both $r(t)$ and $\frac{\partial r(t)}{\partial\sigma}$ using the same $G$
+- Compute $\frac{\partial P(S_1,S_2)}{\partial\sigma}$ using chain rule on analytical formula
+- Accumulate $\int_0^{S_1} \frac{\partial r_s}{\partial\sigma} ds$ using trapezoidal rule
 
 ## Technical Requirements
 
@@ -193,22 +172,17 @@ M_{s,t} = ∂_σ r(s)·e^{-a(t-s)} + 2σe^{-at}[cosh(at) - cosh(as)]/a²
    - Host code for data management
    - Random number generation setup
 
-2. **Presentation (6-8 minutes + 4-6 minutes Q&A):**
-   - Numerical results for P(0,T), f(0,T), θ(T)
-   - Option price ZBC(5, 10, e^{-0.1})
-   - Sensitivity ∂_σ ZBC vs. finite difference validation
+2. **Presentation:**
+   - Numerical results for $P(0,T)$, $f(0,T)$, $\theta(T)$
+   - Option price $\text{ZBC}(5, 10, e^{-0.1})$
+   - Sensitivity $\frac{\partial}{\partial\sigma}\text{ZBC}$ vs. finite difference validation
    - Code explanation (1-2 minutes)
    - Performance analysis (execution time, convergence)
 
-3. **Slides (3-6 slides for results):**
-   - Plots of P(0,T) and f(0,T) curves
-   - Calibrated θ(t) vs. theoretical
+3. **Slides:**
+   - Plots of $P(0,T)$ and $f(0,T)$ curves
+   - Calibrated $\theta(t)$ vs. theoretical
    - Option price with confidence interval
    - Sensitivity comparison (pathwise vs. finite difference)
    - Execution time analysis
 
-## Submission
-
-**Deadline:** December 17th, 2025 (email to instructor)
-
-**Presentation:** December 18th, 2025 (12 minutes total)
