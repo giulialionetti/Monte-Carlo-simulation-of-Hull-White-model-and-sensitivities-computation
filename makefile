@@ -1,5 +1,5 @@
 all:
-	nvcc -O3 -arch=sm_70 -lcurand main.cu -o hw
+	nvcc -O3 -arch=sm_60 -lcurand main.cu -o hw
 
 run: all
 	./hw

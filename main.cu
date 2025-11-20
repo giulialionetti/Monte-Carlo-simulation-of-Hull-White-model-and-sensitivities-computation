@@ -9,6 +9,9 @@
 __constant__ float a = 1.0f; // mean reversion speed
 __constant__ float sigma = 0.1f; // volatility
 __constant__ float r0 = 0.012f; // initial short rate
+__constant__ float dt = 10.0f / N_STEPS; // time step size (0.01 years for 1000 steps over 10 years)
+
+
 
 // Time-dependent theta function 
 __device__ float theta(float t) {
@@ -27,8 +30,11 @@ __global__ void simulate_q1(float* P_sum, curandState* states, int n_paths) {
     if (pid >= n_paths) return; 
     
     curandState local = states[pid];  // local (on each thread's private memory) copy of RNG state
-    float dt = 10.0f / N_STEPS; // time step size (0.01 years for 1000 steps over 10 years)
     
+    float exp_adt = expf(-a * dt); // e^{-a*dt}
+    // volatility of r(t+dt)
+    float sig_st = sigma * sqrtf((1.0f - expf(-2.0f * a * dt)) / (2.0f * a));
+
     // Simulate each maturity
     for (int m = 0; m < N_MAT; m++) {
         float T = m * 0.1f; // convert index to actual years
@@ -49,23 +55,20 @@ __global__ void simulate_q1(float* P_sum, curandState* states, int n_paths) {
         for (int i = 0; i < steps; i++) {
             float t = i * dt;
             float theta_t = theta(t);
-            
-            // e^{-a·dt} = e^{-1.0 × 0.01} = e^{-0.01} ≈ 0.99
-            float exp_adt = expf(-a * dt);
-            /*m_{s,t} =r(t)·e^{-a·dt} + θ(t)·(1 - e^{-a·dt})/a
+
+            /*
+            m_{s,t} =r(t)*e^{-a*dt} + theta(t)*(1 - e^{-a*dt})/a
             
             Expected value of r(t+dt) given r(t)
 
-            1. r·e^{-a·dt}: old rate decays exponentially
-            2. θ(t)·(1-e^{-a·dt})/a: pull towards mean reversion level θ(t) */
+            1. r*e^{-a*dt}: old rate decays exponentially
+            2. theta(t)*(1-e^{-a*dt})/a: pull towards mean reversion level theta(t)
+             */
             float m_st = r * exp_adt + theta_t * (1.0f - exp_adt) / a;
 
-            // σ_{s,t} = σ·sqrt((1 - e^{-2a·dt})/(2a))
-            // volatility of r(t+dt)
-            float sig_st = sigma * sqrtf((1.0f - expf(-2.0f * a * dt)) / (2.0f * a));
-            
-            // Sample from N(m_{s,t}, σ_{s,t}^2)
-            // r(t+dt) = m_{s,t} + σ_{s,t}·G, where G ~ N(0,1)
+            // sigma_{s,t} = sigma * sqrt((1 - e^{-2a * dt})/(2a))            
+            // Sample from N(m_{s,t}, sigma_{s,t}^2)
+            // r(t+dt) = m_{s,t} + sigma_{s,t}*G, where G ~ N(0,1)
             // curand_normal generates standard normal variable
             // The bell curve around m_st has width sig_st
             // Random G determines where in the curve we land
