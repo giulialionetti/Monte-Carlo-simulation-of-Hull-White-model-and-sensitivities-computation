@@ -7,6 +7,7 @@
 #define NTPB 256
 #define NB ((N_PATHS + NTPB - 1) / NTPB)
 #define N_MAT 101
+#define SAVE_STRIDE (N_STEPS / (N_MAT - 1)) // 10 steps per maturity
 
 
 __constant__ float a = 1.0f; // mean reversion speed
@@ -38,56 +39,53 @@ __global__ void simulate_q1(float* P_sum, curandState* states) {
     // volatility of r(t+dt)
     float sig_st = sigma * sqrtf((1.0f - expf(-2.0f * a * dt)) / (2.0f * a));
 
-    // Simulate each maturity
-    for (int m = 0; m < N_MAT; m++) {
-        float T = m * 0.1f; // convert index to actual years
-        int steps = (int)(T / dt);  // To reach T=5.0 years, I need to take 500 steps of size 0.01
+    // base case: T=0 means P(0,0) = 1
+    atomicAdd(&P_sum[0], 1.0f);
+
+    float r = r0;
+    // to calculate the integral of r(t) from 0 to T
+    float integral = 0.0f;
+
+    // Simulate path from 0 to T (Max Maturity) in one cycle
+    for (int i = 1; i <= N_STEPS; i++) {
+        float t = (i - 1) * dt; // current time at start of step
+        float theta_t = theta(t);
+
+        /*
+        m_{s,t} =r(t)*e^{-a*dt} + theta(t)*(1 - e^{-a*dt})/a
         
-        // base case: T=0 means P(0,0) = 1
-        if (steps == 0) {
-            atomicAdd(&P_sum[m], 1.0f);
-            continue;
+        Expected value of r(t+dt) given r(t)
+
+        1. r*e^{-a*dt}: old rate decays exponentially
+        2. theta(t)*(1-e^{-a*dt})/a: pull towards mean reversion level theta(t)
+        */
+        float m_st = r * exp_adt + theta_t * (1.0f - exp_adt) / a;
+
+        // sigma_{s,t} = sigma * sqrt((1 - e^{-2a * dt})/(2a))            
+        // Sample from N(m_{s,t}, sigma_{s,t}^2)
+        // r(t+dt) = m_{s,t} + sigma_{s,t}*G, where G ~ N(0,1)
+        // curand_normal generates standard normal variable
+        // The bell curve around m_st has width sig_st
+        // Random G determines where in the curve we land
+        float G = curand_normal(&local); // NOTE: this is the only place in the code that has (minimal) divergence 
+        float r_next = m_st + sig_st * G;
+
+        // Trapezoidal rule (inherently sequential)
+        integral += 0.5f * (r + r_next) * dt;
+        
+        r = r_next;
+
+        // Check if we reached a maturity
+        if (i % SAVE_STRIDE == 0) {
+            int m = i / SAVE_STRIDE;
+            if (m < N_MAT) {
+                // Discount factor
+                float discount = expf(-integral);
+
+                // must use atomic add since multiple threads write to same location
+                atomicAdd(&P_sum[m], discount);
+            }
         }
-        
-        float r = r0;
-        // to calculate the integral of r(t) from 0 to T
-        float integral = 0.0f;
-        float r_prev = r; // trapezoidal rule needs previous r
-        
-        // Simulate path from 0 to T
-        for (int i = 0; i < steps; i++) {
-            float t = i * dt;
-            float theta_t = theta(t);
-
-            /*
-            m_{s,t} =r(t)*e^{-a*dt} + theta(t)*(1 - e^{-a*dt})/a
-            
-            Expected value of r(t+dt) given r(t)
-
-            1. r*e^{-a*dt}: old rate decays exponentially
-            2. theta(t)*(1-e^{-a*dt})/a: pull towards mean reversion level theta(t)
-             */
-            float m_st = r * exp_adt + theta_t * (1.0f - exp_adt) / a;
-
-            // sigma_{s,t} = sigma * sqrt((1 - e^{-2a * dt})/(2a))            
-            // Sample from N(m_{s,t}, sigma_{s,t}^2)
-            // r(t+dt) = m_{s,t} + sigma_{s,t}*G, where G ~ N(0,1)
-            // curand_normal generates standard normal variable
-            // The bell curve around m_st has width sig_st
-            // Random G determines where in the curve we land
-            float G = curand_normal(&local); // NOTE: this is the only place in the code that has (minimal) divergence 
-            r = m_st + sig_st * G;
-            
-            // Trapezoidal rule (inherently sequential)
-            integral += 0.5f * (r_prev + r) * dt;
-            r_prev = r;
-        }
-        
-        // Discount factor
-        float discount = expf(-integral);
-
-        // must use atomic add since multiple threads write to same location
-        atomicAdd(&P_sum[m], discount);
     }
     
     states[pid] = local;
