@@ -4,7 +4,10 @@
 
 #define N_PATHS 65536
 #define N_STEPS 1000
+#define NTPB 256
+#define NB ((N_PATHS + NTPB - 1) / NTPB)
 #define N_MAT 101
+
 
 __constant__ float a = 1.0f; // mean reversion speed
 __constant__ float sigma = 0.1f; // volatility
@@ -25,9 +28,9 @@ __global__ void init_rng(curandState* states, unsigned long seed) {
     if (idx < N_PATHS) curand_init(seed, idx, 0, &states[idx]);
 }
 
-__global__ void simulate_q1(float* P_sum, curandState* states, int n_paths) {
+__global__ void simulate_q1(float* P_sum, curandState* states) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x; // path index 
-    if (pid >= n_paths) return; 
+    if (pid >= N_PATHS) return; 
     
     curandState local = states[pid];  // local (on each thread's private memory) copy of RNG state
     
@@ -106,11 +109,9 @@ int main() {
     // Initialize to zero
     cudaMemset(d_P_sum, 0, N_MAT * sizeof(float));
     
-    int blocks = (N_PATHS + 255) / 256;
-    
     // Initialize RNG
     printf("Initializing RNG...\n");
-    init_rng<<<blocks, 256>>>(d_states, time(NULL));
+    init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -119,7 +120,7 @@ int main() {
     }
     
     cudaDeviceSynchronize();
-    printf("RNG initialized ✓\n");
+    printf("RNG initialized\n");
     
     // Run simulation
     printf("Running simulation...\n");
@@ -128,7 +129,7 @@ int main() {
     cudaEventCreate(&stop);
     
     cudaEventRecord(start);
-    simulate_q1<<<blocks, 256>>>(d_P_sum, d_states, N_PATHS);
+    simulate_q1<<<NB, NTPB>>>(d_P_sum, d_states);
     cudaEventRecord(stop);
     
     err = cudaGetLastError();
@@ -138,7 +139,7 @@ int main() {
     }
     
     cudaDeviceSynchronize();
-    printf("Simulation complete ✓\n");
+    printf("Simulation complete\n");
     
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
