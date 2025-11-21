@@ -2,9 +2,9 @@
 #include <curand_kernel.h>
 #include <stdio.h>
 
-#define N_PATHS 65536
+#define N_PATHS (1024 * 1024)
 #define N_STEPS 1000
-#define NTPB 256
+#define NTPB 1024
 #define NB ((N_PATHS + NTPB - 1) / NTPB)
 #define N_MAT 101
 #define SAVE_STRIDE (N_STEPS / (N_MAT - 1)) 
@@ -17,10 +17,11 @@ __constant__ float dt; // time step size (0.01 years for 1000 steps over 10 year
 __constant__ float exp_adt; // precomputed e^{-a*dt}
 __constant__ float sig_st; // precomputed sigma_{s,t}
 __constant__ float one_minus_exp_adt_over_a; // precomputed (1-e^{-a*dt})/a
+__constant__ float one_minus_exp_adt_over_a_sq; // precomputed (1-e^{-a*dt})/a^2
 
 // Precompute constants and copy to device constant memory
 void compute_constants() {
-    const float DT = (T / N_STEPS);
+    const float DT = T / N_STEPS;
     const float A = 1.0f;
     const float SIGMA = 0.1f;
     const float R0 = 0.012f;
@@ -28,6 +29,7 @@ void compute_constants() {
     float h_exp_adt = expf(-A * DT);
     float h_sig_st = SIGMA * sqrtf((1.0f - expf(-2.0f * A * DT)) / (2.0f * A));
     float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / A;
+    float h_one_minus_exp_adt_over_a_sq = h_one_minus_exp_adt_over_a / A;
 
     cudaMemcpyToSymbol(a, &A, sizeof(float));
     cudaMemcpyToSymbol(sigma, &SIGMA, sizeof(float));
@@ -36,12 +38,21 @@ void compute_constants() {
     cudaMemcpyToSymbol(exp_adt, &h_exp_adt, sizeof(float));
     cudaMemcpyToSymbol(sig_st, &h_sig_st, sizeof(float));
     cudaMemcpyToSymbol(one_minus_exp_adt_over_a, &h_one_minus_exp_adt_over_a, sizeof(float));
+    cudaMemcpyToSymbol(one_minus_exp_adt_over_a_sq, &h_one_minus_exp_adt_over_a_sq, sizeof(float));
 }
 
 
 // Time-dependent theta function 
 __device__ float theta(float t) {
-    return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.019f + 0.001f * (t - 5.0f));
+    return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
+}
+
+// Integral of e^{-a*(t-u)}*theta(u) du from t to t+dt required for m_{s,t}
+__device__ float m_st_drift_integral(float t, float dt) {
+    float first_term = ((t+dt) - expf(-a * dt) * t) / a - one_minus_exp_adt_over_a_sq;
+    return (t < 5.0f) ? 
+        (0.0014f * first_term + 0.012f * one_minus_exp_adt_over_a) :
+        (0.001f * first_term + 0.014f * one_minus_exp_adt_over_a);
 }
 
 // rng initialization kernel
@@ -53,51 +64,61 @@ __global__ void init_rng(curandState* states, unsigned long seed) {
 
 __global__ void simulate_q1(float* P_sum, curandState* states) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x; // path index 
-    if (pid >= N_PATHS) return; 
-    
-    curandState local = states[pid];  // local (on each thread's private memory) copy of RNG state
 
-    // base case: T=0 means P(0,0) = 1
-    atomicAdd(&P_sum[0], 1.0f);
+    __shared__ float s_P_sum[N_MAT];
+    if (threadIdx.x < N_MAT) {
+        s_P_sum[threadIdx.x] = 0.0f;
+    }
+    __syncthreads();
 
-    float r = r0;
-    // to calculate the integral of r(t) from 0 to T
-    float integral = 0.0f;
+    if (pid < N_PATHS) {
+        curandState local = states[pid];  // local (on each thread's private memory) copy of RNG state
 
-    // Simulate path from 0 to T = 10
-    for (int i = 1; i <= N_STEPS; i++) {
-        float t = (i - 1) * dt; // current time at start of step
-        float theta_t = theta(t);
+        // base case: T=0 means P(0,0) = 1
+        atomicAdd(&s_P_sum[0], 1.0f);
 
-        /*      
-        Expected value of r(t+dt) given r(t)
+        float r = r0;
+        // to calculate the integral of r(t) from 0 to T
+        float integral = 0.0f;
 
-        - r*e^{-a*dt}: old rate decays exponentially
-        - theta(t)*(1-e^{-a*dt})/a: pull towards mean reversion level theta(t)
-        */
-        float m_st = r * exp_adt + theta_t * one_minus_exp_adt_over_a;
+        // Simulate path from 0 to T = 10
+        for (int i = 1; i <= N_STEPS; i++) {
+            float t = (i - 1) * dt; // current time at start of step
+            // float theta_t = theta(t); NOT USED
 
-        // r(t+dt) = m_{s,t} + sigma_{s,t}*G, where G ~ N(0,1)
-        float G = curand_normal(&local);
-        float r_next = m_st + sig_st * G;
+            /*      
+            Expected value of r(t+dt) given r(t)
 
-        // Trapezoidal rule (inherently sequential)
-        integral += 0.5f * (r + r_next) * dt;
-        
-        r = r_next;
+            - r*e^{-a*dt}: old rate decays exponentially
+            - theta(t)*m_st_drift_integral(t, dt): pull towards mean reversion level theta(t)
+            */
+            float m_st = r * exp_adt + m_st_drift_integral(t, dt);
 
-        // Check if we reached a maturity
-        if (i % SAVE_STRIDE == 0) {
-            int m = i / SAVE_STRIDE;
-            if (m < N_MAT) {
-                // Discount factor
-                float discount = expf(-integral);
-                atomicAdd(&P_sum[m], discount);
+            // r(t+dt) = m_{s,t} + sigma_{s,t}*G, where G ~ N(0,1)
+            float G = curand_normal(&local);
+            float r_next = m_st + sig_st * G;
+
+            // Trapezoidal rule (inherently sequential)
+            integral += 0.5f * (r + r_next) * dt;
+            
+            r = r_next;
+
+            // Check if we reached a maturity
+            if (i % SAVE_STRIDE == 0) {
+                int m = i / SAVE_STRIDE;
+                if (m < N_MAT) {
+                    // Discount factor
+                    float discount = expf(-integral);
+                    atomicAdd(&s_P_sum[m], discount);
+                }
             }
+            states[pid] = local;
         }
     }
-    
-    states[pid] = local;
+    __syncthreads();
+    if (threadIdx.x < N_MAT) {
+        atomicAdd(&P_sum[threadIdx.x], s_P_sum[threadIdx.x]);
+    }
 }
 
 int main() {
