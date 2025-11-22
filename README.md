@@ -85,7 +85,7 @@ $$\frac{\partial r(0)}{\partial\sigma} = 0$$
 
 ## Project Tasks
 
-### Question 1: Monte Carlo for Zero Coupon Bonds (8 points)
+### Question 1: Monte Carlo for Zero Coupon Bonds 
 
 **Objective:** Compute Monte Carlo estimates of $P(0,T)$ and $f(0,T)$ for $T \in [0,10]$
 
