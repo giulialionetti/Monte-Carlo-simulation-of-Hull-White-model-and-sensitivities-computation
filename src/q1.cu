@@ -1,4 +1,3 @@
-
 /*
  *  this part of the code computes P(0,T) and f(0,T) for T ∈ [0, 10] using Monte Carlo simulation.
  * 
@@ -7,81 +6,34 @@
  *   - Precomputed drift table (constant memory)
  *   - Shared memory reduction
  *   - Fast math compiler flag
+
+
+ * Output:
+ * - P(0,T) for T ∈ [0, 10] years (saved to data/P.bin)
+ * - f(0,T) for T ∈ [0, 10] years (saved to data/f.bin)
  */
 
 
 #include "common.cuh"
 
-/* 
- * Constant memory for device access
+/**
+ * Simulate zero-coupon bond prices using Hull-White model with antithetic variates.
  * 
- * These values are computed once on host and copied to GPU constant memory
- * for fast, cached access by all threads.
- *  
+ * For each path, we simulate two trajectories using G and -G (antithetic pair)
+ * to reduce variance. The short rate evolution follows:
+ * 
+ *   r(t+Δt) = r(t)e^(-aΔt) + drift_integral + σ√[(1-e^(-2aΔt))/(2a)] × G
+ * 
+ * Bond prices are computed via: P(0,T) = E[exp(-∫₀ᵀ r(s)ds)]
+ * 
+ * The integral ∫r(s)ds is approximated using the trapezoidal rule.
+ * Results are accumulated in shared memory before writing to global memory
+ * to reduce atomic operation overhead.
+ * 
+ * @param P_sum Global memory array to accumulate bond price sums [N_MAT]
+ * @param states cuRAND states for random number generation [N_PATHS]
  */
-__constant__ float d_a;
-__constant__ float d_sigma;
-__constant__ float d_r0;
-__constant__ float d_dt;
-__constant__ float d_exp_adt;
-__constant__ float d_sig_st;
-__constant__ float d_one_minus_exp_adt_over_a;
-__constant__ float d_one_minus_exp_adt_over_a_sq;
-__constant__ float d_drift_table[N_STEPS];
 
-
-/*
- * Initialize constant memory with precomputed values
- * 
- * The Hull-White transition density is:
- *   r(t+Δt) = m_{s,t} + Σ_{s,t}·G,  where G ~ N(0,1)
- * 
- * m_{s,t} = r(s)·e^{-aΔt} + ∫ₛᵗ e^{-a(t-u)}θ(u)du
- * Σ_{s,t} = σ·√[(1-e^{-2aΔt})/(2a)]
- * 
- * We precompute the drift integral for each time step to avoid
- * redundant computation across all paths.
-  */
-void compute_constants() {
-    float h_exp_adt = expf(-H_A * H_DT);
-    float h_sig_st = H_SIGMA * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
-    float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / H_A;
-    float h_one_minus_exp_adt_over_a_sq = h_one_minus_exp_adt_over_a / H_A;
-
-    cudaMemcpyToSymbol(d_a, &H_A, sizeof(float));
-    cudaMemcpyToSymbol(d_sigma, &H_SIGMA, sizeof(float));
-    cudaMemcpyToSymbol(d_r0, &H_R0, sizeof(float));
-    cudaMemcpyToSymbol(d_dt, &H_DT, sizeof(float));
-    cudaMemcpyToSymbol(d_exp_adt, &h_exp_adt, sizeof(float));
-    cudaMemcpyToSymbol(d_sig_st, &h_sig_st, sizeof(float));
-    cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a, &h_one_minus_exp_adt_over_a, sizeof(float));
-    cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a_sq, &h_one_minus_exp_adt_over_a_sq, sizeof(float));
-
-    // Precompute drift integral table
-    float h_drift[N_STEPS];
-    for (int i = 0; i < N_STEPS; i++) {
-        float t = i * H_DT;
-        float first_term = ((t + H_DT) - h_exp_adt * t) / H_A - h_one_minus_exp_adt_over_a_sq;
-        h_drift[i] = (t < 5.0f) ? 
-            (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
-            (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
-    }
-    cudaMemcpyToSymbol(d_drift_table, h_drift, N_STEPS * sizeof(float));
-}
-
-/* 
- * Monte Carlo simulation kernel with antithetic variates
- * 
- * For each random number G, we simulate two paths:
- *   Path 1: uses +G
- *   Path 2: uses -G (antithetic)
- * 
- * These paths are negatively correlated, reducing variance when averaged.
- * The integral ∫r(s)ds is computed using the trapezoidal rule.
- * 
- * Shared memory is used to accumulate partial sums within each block
- * before writing to global memory, reducing atomic contention.
- *  */
 __global__ void simulate_zcb(float* P_sum, curandState* states) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -128,15 +80,26 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
     }
 }
 
-/* 
- * Compute averages and forward rates in a single kernel
+/**
+ * Compute zero-coupon bond prices and forward rates from simulation results.
  * 
- * P(0,T) = P_sum[T] / n_paths
- * f(0,T) = -∂ln(P)/∂T ≈ -(ln P[T+1] - ln P[T-1]) / (2·ΔT)
+ * Bond prices: P(0,T) = P_sum[T] / (2 × N_PATHS)
+ * Forward rates: f(0,T) = -∂ln(P(0,T))/∂T
  * 
- * Central differences are used for interior points.
- * Forward/backward differences are used at boundaries.
- * */
+ * Forward rates are computed using finite differences:
+ * - Central difference for interior points: [ln P(T+ΔT) - ln P(T-ΔT)] / (2ΔT)
+ * - Forward difference at T=0: [ln P(ΔT) - ln P(0)] / ΔT
+ * - Backward difference at T=T_max: [ln P(T_max) - ln P(T_max-ΔT)] / ΔT
+ * 
+ * @param d_P Output array of averaged bond prices [N_MAT]
+ * @param d_f Output array of forward rates [N_MAT]
+ * @param d_P_sum Input array of accumulated sums from simulation [N_MAT]
+ * @param n_mat Number of maturity points
+ * @param n_paths Total number of paths (including antithetic)
+ * @param dT Maturity grid spacing
+ */
+
+
 __global__ void compute_average_and_forward(
     float* d_P,  // Output: averaged bond prices
     float* d_f,  // Output: forward rates
@@ -235,7 +198,7 @@ int main() {
     cudaMemcpy(h_f, d_f, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
     
     // Print results
-    printf("\n");
+    printf("\n"); 
    
     printf("RESULTS\n");
     printf("T (years)    P(0,T)         f(0,T)\n");
