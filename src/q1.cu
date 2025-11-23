@@ -15,6 +15,7 @@
 
 
 #include "common.cuh"
+#include "output.cuh"
 
 /**
  * Simulate zero-coupon bond prices using Hull-White model with antithetic variates.
@@ -224,11 +225,50 @@ int main() {
     printf("Effective paths: %d\n", N_PATHS * 2);
     printf("Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
     
+     summary_init("data/summary.txt");
+
     // Save results
     printf("\n=== Saving Results ===\n");
     save_array(P_FILE, h_P, N_MAT);
     save_array(F_FILE, h_f, N_MAT);
     printf("Results saved for Q2/Q3 ✓\n");
+
+    // Write JSON output
+    FILE* json = json_open("data/q1_results.json", "Q1: Zero-Coupon Bond Pricing");
+    if (json) {
+        json_write_array(json, "P", h_P, N_MAT);
+        fprintf(json, ",\n");
+        json_write_array(json, "f", h_f, N_MAT);
+        fprintf(json, ",\n");
+        json_write_performance(json, sim_ms, N_PATHS * 2);
+        fprintf(json, ",\n");
+        
+        fprintf(json, "  \"validation\": {\n");
+        fprintf(json, "    \"P_0_0\": %.8f,\n", h_P[0]);
+        fprintf(json, "    \"P_0_10\": %.8f,\n", h_P[100]);
+        fprintf(json, "    \"f_0_0\": %.8f\n", h_f[0]);
+        fprintf(json, "  }\n");
+        
+        json_close(json);
+        printf("Saved data/q1_results.json\n");
+    }
+    
+    // Write CSV for plotting
+    csv_write_timeseries("data/P_curve.csv", "P(0,T)", h_P, N_MAT, H_MAT_SPACING);
+    csv_write_timeseries("data/f_curve.csv", "f(0,T)", h_f, N_MAT, H_MAT_SPACING);
+    
+    // Append to summary
+    summary_append("data/summary.txt", "Q1: ZERO-COUPON BOND PRICING");
+    FILE* sum = fopen("data/summary.txt", "a");
+    fprintf(sum, "\nKey Results:\n");
+    fprintf(sum, "  P(0,0) = %.8f (expected: 1.0)\n", h_P[0]);
+    fprintf(sum, "  P(0,10) = %.8f\n", h_P[100]);
+    fprintf(sum, "  f(0,0) = %.4f%% (expected: ~1.2%%)\n", h_f[0] * 100.0f);
+    fprintf(sum, "\nPerformance:\n");
+    fprintf(sum, "  Simulation time: %.2f ms\n", sim_ms);
+    fprintf(sum, "  Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
+    fclose(sum);
+    
     
     // Cleanup
     free(h_P);
