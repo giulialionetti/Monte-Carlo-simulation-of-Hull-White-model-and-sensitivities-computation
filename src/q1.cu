@@ -37,6 +37,7 @@
 
 __global__ void simulate_zcb(float* P_sum, curandState* states) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
 
     __shared__ float s_P_sum[N_MAT];
     if (threadIdx.x < N_MAT) {
@@ -47,7 +48,11 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
     if (pid < N_PATHS) {
         curandState local = states[pid];
 
-        atomicAdd(&s_P_sum[0], 2.0f);
+        float p0_warp = 2.0f * 32;
+        
+        if (lane == 0) {
+            atomicAdd(&s_P_sum[0], p0_warp);
+        }
 
         float r1 = d_r0, r2 = d_r0;
         float integral1 = 0.0f, integral2 = 0.0f;
@@ -67,11 +72,17 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
             if (i % SAVE_STRIDE == 0) {
                 int m = i / SAVE_STRIDE;
                 if (m < N_MAT) {
-                    atomicAdd(&s_P_sum[m], expf(-integral1) + expf(-integral2));
+                    float p0_m = expf(-integral1) + expf(-integral2);
+                    #pragma unroll
+                    for (int offset = 16; offset > 0; offset /= 2) {
+                        p0_m += __shfl_down_sync(0xFFFFFFFF, p0_m, offset);
+                    }
+                    if (lane == 0) {
+                        atomicAdd(&s_P_sum[m], p0_m);
+                    }
                 }
             }
         }
-        
         states[pid] = local;
     }
     
@@ -188,7 +199,7 @@ int main() {
     printf("Simulation complete\n");
     
     // Compute averages and forward rates
-    compute_average_and_forward<<<1, 128>>>(
+    compute_average_and_forward<<<1, N_MAT>>>(
         d_P, d_f, d_P_sum, N_MAT, 2 * N_PATHS, H_MAT_SPACING
     );
     check_cuda("compute_average_and_forward");
@@ -204,7 +215,7 @@ int main() {
     printf("RESULTS\n");
     printf("T (years)    P(0,T)         f(0,T)\n");
     
-    for (int i = 0; i <= 100; i += 10) {
+    for (int i = 0; i < N_MAT; i += SAVE_STRIDE) {
         printf("%5.1f        %.6f       %7.4f%%\n", 
                i * H_MAT_SPACING, h_P[i], h_f[i] * 100.0f);
     }

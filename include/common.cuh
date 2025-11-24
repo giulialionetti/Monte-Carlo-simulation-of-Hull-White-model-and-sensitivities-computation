@@ -27,6 +27,7 @@
 #define N_STEPS 1000 // Time discretization steps
 #define NTPB 1024  // Threads per block
 #define NB ((N_PATHS + NTPB - 1) / NTPB) // Number of blocks
+#define WARPS_PER_BLOCK (NTPB / 32) // Number of warps per block
 #define N_MAT 101 // Number of maturities 
 #define T_FINAL 10.0f  // Final maturity (years)
 

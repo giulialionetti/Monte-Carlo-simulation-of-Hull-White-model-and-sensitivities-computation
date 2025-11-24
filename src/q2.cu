@@ -226,7 +226,7 @@ __global__ void simulate_ZBC_optimized(
     int warp_id = threadIdx.x >> 5;    // Warp index within block
 
     // One accumulator per warp (max 32 warps per 1024-thread block)
-    __shared__ float warp_sums[32];
+    __shared__ float warp_sums[WARPS_PER_BLOCK];
 
     float thread_sum = 0.0f;
 
@@ -388,8 +388,8 @@ __global__ void simulate_ZBC_control_variate(
     int lane = threadIdx.x & 31;
     int warp_id = threadIdx.x >> 5;
 
-    __shared__ float warp_ZBC_sums[32];
-    __shared__ float warp_control_sums[32];
+    __shared__ float warp_ZBC_sums[WARPS_PER_BLOCK];
+    __shared__ float warp_control_sums[WARPS_PER_BLOCK];
 
     float thread_ZBC = 0.0f;
     float thread_control = 0.0f;
