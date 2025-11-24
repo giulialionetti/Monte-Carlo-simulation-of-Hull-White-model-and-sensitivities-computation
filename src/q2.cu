@@ -21,11 +21,11 @@
  * @param f Array of forward rates
  * @param i Index at which to compute derivative
  * @param n Array length
- * @param spacing Grid spacing ΔT
+ * @param spacing Grid spacing dT
  * @return df/dT at index i
  */
 
-float compute_derivative(const float* f, int i, int n, float spacing) {
+__device__ float compute_derivative(const float* f, int i, int n, float spacing) {
     if (i == 0) {
         return (f[1] - f[0]) / spacing;
     } else if (i == n - 1) {
@@ -38,7 +38,7 @@ float compute_derivative(const float* f, int i, int n, float spacing) {
 /**
  * Recover theta(t) from forward rates using Hull-White calibration formula.
  * 
- * Formula (equation 10): θ(T) = df/dT + af(0,T) + σ²/(2a)(1 - e^(-2aT))
+ * Formula (equation 10): theta(T) = df/dT + af(0,T) + sigma^2/(2a)(1 - e^(-2aT))
  * 
  * This inverts the relationship between theta and forward rates, allowing
  * calibration to market data. We verify that our Monte Carlo f(0,T) correctly
@@ -46,16 +46,21 @@ float compute_derivative(const float* f, int i, int n, float spacing) {
  * 
  * @param f Array of forward rates f(0,T) from Monte Carlo
  * @param theta_recovered Output array for recovered theta values
+ * @param theta_original Output array for original theta values
  * @param n_mat Number of maturity points
  */
 
-void recover_theta(const float* f, float* theta_recovered, int n_mat) {
-    for (int i = 0; i < n_mat; i++) {
-        float T = i * H_MAT_SPACING;
-        float df_dT = compute_derivative(f, i, n_mat, H_MAT_SPACING);
-        float convexity = (H_SIGMA * H_SIGMA / (2.0f * H_A)) * 
-                         (1.0f - expf(-2.0f * H_A * T));
-        theta_recovered[i] = df_dT + H_A * f[i] + convexity;
+__global__ void recover_theta(const float* f,
+                              float* theta_recovered, 
+                              float* theta_original, 
+                              int n_mat) {
+    for (int i = threadIdx.x; i < n_mat; i += blockDim.x) {
+        float T = i * d_mat_spacing;
+        float df_dT = compute_derivative(f, i, n_mat, d_mat_spacing);
+        float convexity = (d_sigma * d_sigma / (2.0f * d_a)) * 
+                         (1.0f - expf(-2.0f * d_a * T));
+        theta_recovered[i] = df_dT + d_a * f[i] + convexity;
+        theta_original[i] = theta_func(T);
     }
 }
 
@@ -78,7 +83,7 @@ void print_theta_comparison(const float* theta_original,
     float sum_error = 0.0f;
     int n_printed = 0;
     
-    for (int i = 0; i <= 100; i += 10) {
+    for (int i = 0; i <= n_mat; i += SAVE_STRIDE) {
         float T = i * H_MAT_SPACING;
         float error = fabsf(theta_recovered[i] - theta_original[i]);
         max_error = fmaxf(max_error, error);
@@ -92,21 +97,24 @@ void print_theta_comparison(const float* theta_original,
     
     printf("Max error:  %.2e\n", max_error);
     printf("Mean error: %.2e\n", sum_error / n_printed);
-    printf("\nRecovery: %s\n", max_error < 0.01f ? "SUCCESS ✓" : "FAILED ✗");
+    printf("\nRecovery: %s\n", max_error < 0.01f ? "SUCCESS" : "FAILED");
 }
 
-void run_q2a(const float* h_P, const float* h_f) {
+void run_q2a(const float* h_P, const float* h_f, 
+             const float* d_P_market, const float* d_f_market) {
     printf("\n=== Q2a: THETA RECOVERY ===\n\n");
     
     float h_theta_recovered[N_MAT];
     float h_theta_original[N_MAT];
+    float* d_theta_recovered, *d_theta_original;
+    cudaMalloc(&d_theta_recovered, N_MAT * sizeof(float));
+    cudaMalloc(&d_theta_original, N_MAT * sizeof(float));
     
-    recover_theta(h_f, h_theta_recovered, N_MAT);
-    
-    for (int i = 0; i < N_MAT; i++) {
-        float T = i * H_MAT_SPACING;
-        h_theta_original[i] = theta_func(T);
-    }
+    recover_theta<<<1, N_MAT>>>(d_f_market, d_theta_recovered, d_theta_original, N_MAT);
+    check_cuda("recover_theta");
+    cudaDeviceSynchronize();
+    cudaMemcpy(h_theta_recovered, d_theta_recovered, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_theta_original, d_theta_original, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
     
     print_theta_comparison(h_theta_original, h_theta_recovered, N_MAT);
 }
@@ -283,7 +291,7 @@ __global__ void simulate_ZBC_optimized(
     }
 }
 
-void run_q2b(const float* h_P, const float* h_f) {
+void run_q2b(const float* d_P_market, const float* d_f_market) {
     printf("\n\n=== Q2b: ZERO COUPON BOND CALL OPTION ===\n");
     
     float S1 = 5.0f;
@@ -296,19 +304,13 @@ void run_q2b(const float* h_P, const float* h_f) {
     printf("  K (strike) = %.6f\n", K);
     printf("  N_PATHS = %d (x2 antithetic = %d effective)\n\n", N_PATHS, N_PATHS * 2);
     
-    float *d_ZBC_sum, *d_P_market, *d_f_market;
+    float *d_ZBC_sum;
     float h_ZBC;
     curandState *d_states;
     
     cudaMalloc(&d_ZBC_sum, sizeof(float));
-    cudaMalloc(&d_P_market, N_MAT * sizeof(float));
-    cudaMalloc(&d_f_market, N_MAT * sizeof(float));
     cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
     check_cuda("cudaMalloc Q2b");
-    
-    cudaMemcpy(d_P_market, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_f_market, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
-    check_cuda("cudaMemcpy market data");
     
     cudaMemset(d_ZBC_sum, 0, sizeof(float));
     
@@ -344,8 +346,6 @@ void run_q2b(const float* h_P, const float* h_f) {
     printf("Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
     
     cudaFree(d_ZBC_sum);
-    cudaFree(d_P_market);
-    cudaFree(d_f_market);
     cudaFree(d_states);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
@@ -530,10 +530,20 @@ int main() {
     load_array(P_FILE, h_P, N_MAT);
     load_array(F_FILE, h_f, N_MAT);
     printf("\n");
+
+    float *d_P_market, *d_f_market;
+    cudaMalloc(&d_P_market, N_MAT * sizeof(float));
+    cudaMalloc(&d_f_market, N_MAT * sizeof(float));
+    cudaMemcpy(d_P_market, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_f_market, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
+    check_cuda("cudaMemcpy market data");
     
     compute_constants();  
-    run_q2a(h_P, h_f);
-    run_q2b_control_variate(h_P, h_f);
+    run_q2a(h_P, h_f, d_P_market, d_f_market);
+    //run_q2b_control_variate(h_P, h_f);
+
+    cudaFree(d_P_market);
+    cudaFree(d_f_market);
     
     return 0;
 }

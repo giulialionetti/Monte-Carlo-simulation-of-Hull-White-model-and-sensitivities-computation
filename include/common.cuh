@@ -57,6 +57,7 @@ __constant__ float d_a; // Mean reversion speed
 __constant__ float d_sigma;  // Volatility
 __constant__ float d_r0; // Initial short rate
 __constant__ float d_dt; // Time step
+__constant__ float d_mat_spacing; // Maturity spacing
 __constant__ float d_exp_adt; // e^{-aΔt}
 __constant__ float d_sig_st; // σ·√[(1-e^{-2aΔt})/(2a)]
 __constant__ float d_one_minus_exp_adt_over_a; // (1 - e^{-aΔt})/a
@@ -74,6 +75,7 @@ void compute_constants() {
     cudaMemcpyToSymbol(d_sigma, &H_SIGMA, sizeof(float));
     cudaMemcpyToSymbol(d_r0, &H_R0, sizeof(float));
     cudaMemcpyToSymbol(d_dt, &H_DT, sizeof(float));
+    cudaMemcpyToSymbol(d_mat_spacing, &H_MAT_SPACING, sizeof(float));
     cudaMemcpyToSymbol(d_exp_adt, &h_exp_adt, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st, sizeof(float));
     cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a, &h_one_minus_exp_adt_over_a, sizeof(float));
