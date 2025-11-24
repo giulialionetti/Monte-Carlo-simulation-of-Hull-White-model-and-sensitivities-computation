@@ -95,6 +95,36 @@ inline void csv_write_comparison(const char* filename,
     printf("Saved %s\n", filename);
 }
 
+
+void save_q2a_json(const char* filename, float max_error, bool success) {
+    FILE* json = json_open(filename, "q2a_results");
+    if (!json) return;
+
+    fprintf(json, "  \"error_metrics\": {\n");
+    fprintf(json, "    \"max_error\": %.2e,\n", max_error);
+    fprintf(json, "    \"success\": %s\n", success ? "true" : "false");
+    fprintf(json, "  }\n");
+
+    json_close(json);
+    printf("Saved %s\n", filename);
+}
+
+void save_q2b_json(const char* filename, float zbc_val, float control_dev, float time_ms, int effective_paths) {
+    FILE* json = json_open(filename, "q2b_results");
+    if (!json) return;
+    
+    json_write_performance(json, time_ms, effective_paths);
+    
+    fprintf(json, ",\n");
+    fprintf(json, "  \"results\": {\n");
+    fprintf(json, "    \"ZBC_control_variate\": %.8f,\n", zbc_val);
+    fprintf(json, "    \"control_deviation\": %.2e\n", control_dev);
+    fprintf(json, "  }\n");
+
+    json_close(json);
+    printf("Saved %s\n", filename);
+}
+
 inline void summary_append(const char* filename, const char* section_title) {
     FILE* f = fopen(filename, "a");
     if (!f) {

@@ -42,7 +42,7 @@ def plot_theta_recovery():
     plt.plot(df['T'], df['theta_original'], 'b-', linewidth=2, label='Original θ(t)')
     plt.plot(df['T'], df['theta_recovered'], 'r--', linewidth=2, label='Recovered θ(t)')
     plt.xlabel('Time t (years)')
-    plt.ylabel('θ(t)')
+    plt.ylabel('theta(t)')
     plt.title('Theta Function Recovery from Forward Rates')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -72,7 +72,7 @@ def print_summary():
     
     print(f"\nQ2a: Theta Recovery")
     print(f"  Max error: {q2a['error_metrics']['max_error']:.2e}")
-    print(f"  Status: {'✓ SUCCESS' if q2a['error_metrics']['success'] else '✗ FAILED'}")
+    print(f"  Status: {'SUCCESS' if q2a['error_metrics']['success'] else 'FAILED'}")
     
     print(f"\nQ2b: ZBC Option")
     print(f"  ZBC(5,10,e^-0.1) = {q2b['results']['ZBC_control_variate']:.8f}")
@@ -86,7 +86,8 @@ if __name__ == '__main__':
     os.makedirs('plots', exist_ok=True)
     
     plot_P_and_f()
-    # TODO plot_theta_recovery()
+    # TODO 
+    plot_theta_recovery()
     print_summary()
     
-    print("\n✓ Analysis complete. Check plots/ and data/summary.txt")
+    print("\nAnalysis complete. Check plots/ and data/summary.txt")
