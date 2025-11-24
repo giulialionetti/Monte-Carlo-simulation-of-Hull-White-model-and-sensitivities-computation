@@ -230,7 +230,7 @@ __device__ inline float interpolate(const float* data, float T, float spacing) {
 /**
  * Hull-White A(t,T) function for zero-coupon bond pricing.
  * 
- * Analytical formula: A(t,T) = [P(0,T)/P(0,t)] × exp[B(t,T)f(0,t) - σ²/(4a)(1-e^(-2at))B(t,T)²]
+ * Analytical formula: A(t,T) = [P(0,T)/P(0,t)] * exp[B(t,T)f(0,t) - sigma^2/(4a)(1-e^(-2at))B(t,T)^2]
  * 
  * @param t Current time
  * @param T Bond maturity

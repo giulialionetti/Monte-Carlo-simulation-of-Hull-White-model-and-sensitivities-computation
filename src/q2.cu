@@ -122,16 +122,16 @@ void run_q2a(const float* h_P, const float* h_f,
 /**
  * Monte Carlo kernel for pricing European call option on zero-coupon bond.
  * 
- * Option payoff: max(P(S₁,S₂) - K, 0) at expiry S₁
- * Bond matures at S₂, strike is K
+ * Option payoff: max(P(S1,S2) - K, 0) at expiry S1
+ * Bond matures at S2, strike is K
  * 
- * Value: ZBC(S₁,S₂,K) = E[e^(-∫₀^S₁ r(s)ds) × (P(S₁,S₂) - K)⁺]
+ * Value: ZBC(S1,S2,K) = E[e^(-\int_0^{S1} r(s)ds) × (P(S1,S2) - K)⁺]
  * 
  * Algorithm:
- * 1. Simulate short rate r(t) from 0 to S₁ using Hull-White dynamics
- * 2. Compute discount factor exp(-∫₀^S₁ r(s)ds) via trapezoidal rule
- * 3. Evaluate P(S₁,S₂) using analytical Hull-White formula (no further simulation needed)
- * 4. Compute discounted payoff: discount × max(P(S₁,S₂) - K, 0)
+ * 1. Simulate short rate r(t) from 0 to S1 using Hull-White dynamics
+ * 2. Compute discount factor exp(-\int_0^{S1} r(s)ds) via trapezoidal rule
+ * 3. Evaluate P(S1,S2) using analytical Hull-White formula (no further simulation needed)
+ * 4. Compute discounted payoff: discount * max(P(S1,S2) - K, 0)
  * 5. Average over all paths (including antithetic pairs)
  * 
  * Uses antithetic variates for variance reduction.
@@ -318,7 +318,7 @@ void run_q2b(const float* d_P_market, const float* d_f_market) {
     init_rng<<<NB, NTPB>>>(d_states, time(NULL) + 54321);
     check_cuda("init_rng Q2b");
     cudaDeviceSynchronize();
-    printf("RNG initialized ✓\n");
+    printf("RNG initialized\n");
     
     printf("Running Monte Carlo simulation...\n");
     cudaEvent_t start, stop;
@@ -333,7 +333,7 @@ void run_q2b(const float* d_P_market, const float* d_f_market) {
     
     float sim_ms;
     cudaEventElapsedTime(&sim_ms, start, stop);
-    printf("Simulation complete ✓\n");
+    printf("Simulation complete\n");
     
     cudaMemcpy(&h_ZBC, d_ZBC_sum, sizeof(float), cudaMemcpyDeviceToHost);
     h_ZBC /= (2.0f * N_PATHS);
@@ -386,8 +386,8 @@ __global__ void simulate_ZBC_control_variate(
 
         int n_steps_S1 = (int)(S1 / d_dt);
 
-        for (int i = 1; i <= n_steps_S1; i++) {
-            float drift = d_drift_table[i - 1];
+        for (int i = 0; i < n_steps_S1; i++) {
+            float drift = d_drift_table[i];
             float G = curand_normal(&local);
 
             float r1_next = r1 * d_exp_adt + drift + d_sig_st * G;
@@ -405,7 +405,7 @@ __global__ void simulate_ZBC_control_variate(
         float discount1 = expf(-integral1);
         float discount2 = expf(-integral2);
         
-        // Control variate: discount × P (we know E[this] = P(0,S2))
+        // Control variate: discount * P (we know E[this] = P(0,S2))
         float control1 = discount1 * P1;
         float control2 = discount2 * P2;
         
@@ -447,26 +447,22 @@ __global__ void simulate_ZBC_control_variate(
     }
 }
 
-void run_q2b_control_variate(const float* h_P, const float* h_f) {
+void run_q2b_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
     printf("\n\n=== Q2b: ZBC WITH CONTROL VARIATE ===\n");
     
     float S1 = 5.0f;
     float S2 = 10.0f;
     float K = expf(-0.1f);
     
-    float *d_ZBC_sum, *d_control_sum, *d_P_market, *d_f_market;
+    float *d_ZBC_sum, *d_control_sum;
     float h_ZBC, h_control;
     curandState *d_states;
     
     cudaMalloc(&d_ZBC_sum, sizeof(float));
     cudaMalloc(&d_control_sum, sizeof(float));
-    cudaMalloc(&d_P_market, N_MAT * sizeof(float));
-    cudaMalloc(&d_f_market, N_MAT * sizeof(float));
     cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
     check_cuda("cudaMalloc Q2b CV");
     
-    cudaMemcpy(d_P_market, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_f_market, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemset(d_ZBC_sum, 0, sizeof(float));
     cudaMemset(d_control_sum, 0, sizeof(float));
     
@@ -494,7 +490,6 @@ void run_q2b_control_variate(const float* h_P, const float* h_f) {
     h_control /= (2.0f * N_PATHS);
     
     // Control variate adjustment
-    float P0S2 = h_P[100];  // P(0,10) from Q1 ≈ 0.877
     float ZBC_adjusted = h_ZBC - (h_control - P0S2);
     
     printf("=== RESULTS ===\n");
@@ -510,8 +505,6 @@ void run_q2b_control_variate(const float* h_P, const float* h_f) {
     
     cudaFree(d_ZBC_sum);
     cudaFree(d_control_sum);
-    cudaFree(d_P_market);
-    cudaFree(d_f_market);
     cudaFree(d_states);
 }
 
@@ -540,7 +533,7 @@ int main() {
     
     compute_constants();  
     run_q2a(h_P, h_f, d_P_market, d_f_market);
-    //run_q2b_control_variate(h_P, h_f);
+    run_q2b_control_variate(d_P_market, d_f_market, h_P[N_MAT-1]);
 
     cudaFree(d_P_market);
     cudaFree(d_f_market);
