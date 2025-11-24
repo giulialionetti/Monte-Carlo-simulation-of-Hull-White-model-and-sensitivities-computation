@@ -118,7 +118,7 @@ __global__ void compute_average_and_forward(
     float* d_P_sum, // Input: raw sums from simulation
     int n_mat, // Number of maturities
     int n_paths, // Number of paths (2*N_PATHS for antithetic)
-    float dT // Maturity spacing
+    float inv_dT // (1 / Maturity spacing)
 ) {
     __shared__ float s_P[N_MAT];
     int m = threadIdx.x;
@@ -133,16 +133,10 @@ __global__ void compute_average_and_forward(
     
     //Compute forward rates via finite differences
     if (m < n_mat) {
-        if (m == 0) {
-             // Forward difference at left boundary
-            d_f[m] = -(logf(s_P[1]) - logf(s_P[0])) / dT;
-        } else if (m == n_mat - 1) {
-             // Backward difference at right boundary
-            d_f[m] = -(logf(s_P[m]) - logf(s_P[m-1])) / dT;
-        } else {
-             // Central difference for interior points
-            d_f[m] = -(logf(s_P[m+1]) - logf(s_P[m-1])) / (2.0f * dT);
-        }
+        int first_idx = (m == 0) ? 0 : m - 1;
+        int last_idx = (m == n_mat - 1) ? n_mat - 1 : m + 1;
+        float scale = ((m == 0) || (m == n_mat - 1)) ? 1.0f : 0.5f;
+        d_f[m] = -scale * inv_dT * (logf(s_P[last_idx]) - logf(s_P[first_idx]));
     }
 }
 
@@ -199,8 +193,8 @@ int main() {
     printf("Simulation complete\n");
     
     // Compute averages and forward rates
-    compute_average_and_forward<<<1, N_MAT>>>(
-        d_P, d_f, d_P_sum, N_MAT, 2 * N_PATHS, H_MAT_SPACING
+    compute_average_and_forward<<<1, 128>>>(
+        d_P, d_f, d_P_sum, N_MAT, 2 * N_PATHS, 1 / H_MAT_SPACING
     );
     check_cuda("compute_average_and_forward");
     cudaDeviceSynchronize();

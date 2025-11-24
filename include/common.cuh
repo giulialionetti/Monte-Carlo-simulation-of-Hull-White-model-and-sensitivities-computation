@@ -59,10 +59,10 @@ __constant__ float d_sigma;  // Volatility
 __constant__ float d_r0; // Initial short rate
 __constant__ float d_dt; // Time step
 __constant__ float d_mat_spacing; // Maturity spacing
-__constant__ float d_exp_adt; // e^{-aΔt}
-__constant__ float d_sig_st; // σ·√[(1-e^{-2aΔt})/(2a)]
-__constant__ float d_one_minus_exp_adt_over_a; // (1 - e^{-aΔt})/a
-__constant__ float d_one_minus_exp_adt_over_a_sq; // ((1 - e^{-aΔt})/a)²
+__constant__ float d_exp_adt; // e^{-adt}
+__constant__ float d_sig_st; // sigma*sqrt[(1-e^{-2adt})/(2a)]
+__constant__ float d_one_minus_exp_adt_over_a; // (1 - e^{-adt})/a
+__constant__ float d_one_minus_exp_adt_over_a_sq; // ((1 - e^{-adt})/a)^2
 __constant__ float d_drift_table[N_STEPS]; // Precomputed drift integral table
 
 // Initialize constant memory with precomputed values
