@@ -104,10 +104,10 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
 __global__ void compute_average_and_forward(
     float* d_P,  // Output: averaged bond prices
     float* d_f,  // Output: forward rates
-     float* d_P_sum, // Input: raw sums from simulation
+    float* d_P_sum, // Input: raw sums from simulation
     int n_mat, // Number of maturities
-     int n_paths, // Number of paths (2×N_PATHS for antithetic)
-      float dT // Maturity spacing
+    int n_paths, // Number of paths (2×N_PATHS for antithetic)
+    float dT // Maturity spacing
 ) {
     __shared__ float s_P[N_MAT];
     int m = threadIdx.x;
@@ -225,7 +225,7 @@ int main() {
     printf("Effective paths: %d\n", N_PATHS * 2);
     printf("Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
     
-     summary_init("data/summary.txt");
+    summary_init("data/summary.txt");
 
     // Save results
     printf("\n=== Saving Results ===\n");
@@ -254,8 +254,8 @@ int main() {
     }
     
     // Write CSV for plotting
-    csv_write_timeseries("data/P_curve.csv", "P(0,T)", h_P, N_MAT, H_MAT_SPACING);
-    csv_write_timeseries("data/f_curve.csv", "f(0,T)", h_f, N_MAT, H_MAT_SPACING);
+    csv_write_timeseries("data/P_curve.csv", "P(0 T)", h_P, N_MAT, H_MAT_SPACING);
+    csv_write_timeseries("data/f_curve.csv", "f(0 T)", h_f, N_MAT, H_MAT_SPACING);
     
     // Append to summary
     summary_append("data/summary.txt", "Q1: ZERO-COUPON BOND PRICING");

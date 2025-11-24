@@ -16,14 +16,15 @@ def plot_P_and_f():
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     
     # Plot P(0,T)
-    ax1.plot(P_df['T'], P_df['P(0,T)'], 'b-', linewidth=2)
+    print(P_df.head())
+    ax1.plot(P_df['T'], P_df['P(0 T)'], 'b-', linewidth=2)
     ax1.set_xlabel('Maturity T (years)')
     ax1.set_ylabel('P(0,T)')
     ax1.set_title('Zero-Coupon Bond Prices')
     ax1.grid(True, alpha=0.3)
     
     # Plot f(0,T)
-    ax2.plot(f_df['T'], f_df['f(0,T)'] * 100, 'r-', linewidth=2)
+    ax2.plot(f_df['T'], f_df['f(0 T)'] * 100, 'r-', linewidth=2)
     ax2.set_xlabel('Maturity T (years)')
     ax2.set_ylabel('f(0,T) (%)')
     ax2.set_title('Forward Rates')
@@ -85,7 +86,7 @@ if __name__ == '__main__':
     os.makedirs('plots', exist_ok=True)
     
     plot_P_and_f()
-    plot_theta_recovery()
+    # TODO plot_theta_recovery()
     print_summary()
     
     print("\n✓ Analysis complete. Check plots/ and data/summary.txt")
