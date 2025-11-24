@@ -1,5 +1,5 @@
 /*
- *  this part of the code computes P(0,T) and f(0,T) for T ∈ [0, 10] using Monte Carlo simulation.
+ *  This part of the code computes P(0,T) and f(0,T) for T in [0, 10] using Monte Carlo simulation.
  * 
  *   the following optimizations have been implemented:
  *   - Antithetic variates (variance reduction)
@@ -9,8 +9,8 @@
 
 
  * Output:
- * - P(0,T) for T ∈ [0, 10] years (saved to data/P.bin)
- * - f(0,T) for T ∈ [0, 10] years (saved to data/f.bin)
+ * - P(0,T) for T in [0, 10] years (saved to data/P.bin)
+ * - f(0,T) for T in [0, 10] years (saved to data/f.bin)
  */
 
 
@@ -23,11 +23,11 @@
  * For each path, we simulate two trajectories using G and -G (antithetic pair)
  * to reduce variance. The short rate evolution follows:
  * 
- *   r(t+Δt) = r(t)e^(-aΔt) + drift_integral + σ√[(1-e^(-2aΔt))/(2a)] × G
+ *   r(t+dt) = r(t)e^(-a*dt) + drift_integral + sigma * √[(1-e^(-2a*dt))/(2a)] * G
  * 
- * Bond prices are computed via: P(0,T) = E[exp(-∫₀ᵀ r(s)ds)]
+ * Bond prices are computed via: P(0,T) = E[exp(-\int_0^T r(s)ds)]
  * 
- * The integral ∫r(s)ds is approximated using the trapezoidal rule.
+ * The integral (\int_0^T r(s)ds) is approximated using the trapezoidal rule.
  * Results are accumulated in shared memory before writing to global memory
  * to reduce atomic operation overhead.
  * 
@@ -84,13 +84,13 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
 /**
  * Compute zero-coupon bond prices and forward rates from simulation results.
  * 
- * Bond prices: P(0,T) = P_sum[T] / (2 × N_PATHS)
- * Forward rates: f(0,T) = -∂ln(P(0,T))/∂T
+ * Bond prices: P(0,T) = P_sum[T] / (2 * N_PATHS)
+ * Forward rates: f(0,T) = -\partial ln(P(0,T)) / \partial T
  * 
  * Forward rates are computed using finite differences:
- * - Central difference for interior points: [ln P(T+ΔT) - ln P(T-ΔT)] / (2ΔT)
- * - Forward difference at T=0: [ln P(ΔT) - ln P(0)] / ΔT
- * - Backward difference at T=T_max: [ln P(T_max) - ln P(T_max-ΔT)] / ΔT
+ * - Central difference for interior points: [ln P(T+dT) - ln P(T-dT)] / (2dT)
+ * - Forward difference at T=0: [ln P(dT) - ln P(0)] / dT
+ * - Backward difference at T=T_max: [ln P(T_max) - ln P(T_max-dT)] / dT
  * 
  * @param d_P Output array of averaged bond prices [N_MAT]
  * @param d_f Output array of forward rates [N_MAT]
@@ -106,7 +106,7 @@ __global__ void compute_average_and_forward(
     float* d_f,  // Output: forward rates
     float* d_P_sum, // Input: raw sums from simulation
     int n_mat, // Number of maturities
-    int n_paths, // Number of paths (2×N_PATHS for antithetic)
+    int n_paths, // Number of paths (2*N_PATHS for antithetic)
     float dT // Maturity spacing
 ) {
     __shared__ float s_P[N_MAT];
@@ -169,7 +169,7 @@ int main() {
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     check_cuda("init_rng");
     cudaDeviceSynchronize();
-    printf("RNG initialized ✓\n");
+    printf("RNG initialized\n");
     
     // Run simulation
     printf("Running Monte Carlo simulation...\n");
@@ -185,7 +185,7 @@ int main() {
     
     float sim_ms;
     cudaEventElapsedTime(&sim_ms, start, stop);
-    printf("Simulation complete ✓\n");
+    printf("Simulation complete\n");
     
     // Compute averages and forward rates
     compute_average_and_forward<<<1, 128>>>(
@@ -213,11 +213,11 @@ int main() {
     // Sanity checks
     printf("\n=== Sanity Checks ===\n");
     printf("P(0,0) = 1.0:      %.6f %s\n", h_P[0], 
-           (h_P[0] > 0.99f && h_P[0] < 1.01f) ? "✓" : "✗");
+           (h_P[0] > 0.99f && h_P[0] < 1.01f) ? "OK" : "ERROR");
     printf("P(0,10) ~ 0.87:    %.6f %s\n", h_P[100], 
-           (h_P[100] > 0.3f && h_P[100] < 0.9f) ? "✓" : "✗");
+           (h_P[100] > 0.3f && h_P[100] < 0.9f) ? "OK" : "ERROR");
     printf("f(0,0) ~ 1.2%%:     %.4f%% %s\n", h_f[0] * 100.0f, 
-           (h_f[0] > 0.01f && h_f[0] < 0.02f) ? "✓" : "✗");
+           (h_f[0] > 0.01f && h_f[0] < 0.02f) ? "OK" : "ERROR");
     
     // Performance
     printf("\n=== Performance ===\n");
@@ -231,7 +231,7 @@ int main() {
     printf("\n=== Saving Results ===\n");
     save_array(P_FILE, h_P, N_MAT);
     save_array(F_FILE, h_f, N_MAT);
-    printf("Results saved for Q2/Q3 ✓\n");
+    printf("Results saved for Q2/Q3\n");
 
     // Write JSON output
     FILE* json = json_open("data/q1_results.json", "Q1: Zero-Coupon Bond Pricing");
