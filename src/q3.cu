@@ -85,8 +85,8 @@ __global__ void simulate_sensitivity(
             float r_next = r * d_exp_adt + drift_r + d_sig_st * G; 
             float d_sigma_r_next = d_sigma_r * d_exp_adt + drift_d_sigma_r + (d_sig_st / d_sigma) * G;
 
-            int_r += 0.5 * d_dt * (r + r_next);
-            int_d_sigma_r += 0.5 * d_dt * (d_sigma_r + d_sigma_r_next);
+            int_r += 0.5f * d_dt * (r + r_next);
+            int_d_sigma_r += 0.5f * d_dt * (d_sigma_r + d_sigma_r_next);
 
             r = r_next;
             d_sigma_r = d_sigma_r_next;
