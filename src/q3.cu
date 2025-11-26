@@ -123,7 +123,7 @@ __global__ void simulate_sensitivity(
 
     // Block Reduction
     if (warp_id == 0) {
-        float warp_sum = (lane < (blockDim.x >> 5)) ? warp_sums[lane] : 0.0f;
+        float warp_sum = (lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f;
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
             warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);

@@ -293,7 +293,7 @@ __global__ void simulate_ZBC_optimized(
     
     // First warp does final reduction across all warps
     if (warp_id == 0) {
-        float warp_sum = (lane < (blockDim.x >> 5)) ? warp_sums[lane] : 0.0f;
+        float warp_sum = (lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f;
         
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
@@ -448,8 +448,8 @@ __global__ void simulate_ZBC_control_variate(
     __syncthreads();
     
     if (warp_id == 0) {
-        float warp_ZBC = (lane < (blockDim.x >> 5)) ? warp_ZBC_sums[lane] : 0.0f;
-        float warp_control = (lane < (blockDim.x >> 5)) ? warp_control_sums[lane] : 0.0f;
+        float warp_ZBC = (lane < WARPS_PER_BLOCK) ? warp_ZBC_sums[lane] : 0.0f;
+        float warp_control = (lane < WARPS_PER_BLOCK) ? warp_control_sums[lane] : 0.0f;
         
         for (int offset = 16; offset > 0; offset >>= 1) {
             warp_ZBC += __shfl_down_sync(0xffffffff, warp_ZBC, offset);
