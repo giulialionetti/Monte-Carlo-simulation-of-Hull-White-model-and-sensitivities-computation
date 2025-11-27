@@ -6,15 +6,15 @@ BIN = bin
 
 all: q1 q2 q3
 
-q1: $(SRC)/q1.cu
+q1: $(SRC)/1_bond_pricing.cu
 	@mkdir -p $(BIN) data plots
 	$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
 
-q2: $(SRC)/q2.cu
+q2: $(SRC)/2_option_pricing.cu
 	@mkdir -p $(BIN) data plots
 	$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
 
-q3: $(SRC)/q3.cu
+q3: $(SRC)/3_sensitivity_analysis.cu
 	@mkdir -p $(BIN) data plots
 	$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
 
