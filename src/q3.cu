@@ -174,26 +174,58 @@ __global__ void simulate_ZBC_simple(
     const float* __restrict__ d_P_market, const float* __restrict__ d_f_market
 ) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    // Load RNG state (note: we make a LOCAL copy to avoid race conditions)
+    // We don't save state back - caller manages state for CRN
     if (pid < N_PATHS) {
-        curandState local = states[pid]; // Use copies to not mess up main stream
+        curandState local = states[pid]; 
         float r = d_r0;
         float integral = 0.0f;
+        // Simulate from t=0 to t=S1 (option maturity)
         int n_steps = (int)(S1 / d_dt);
 
+        // Hull-White SDE: dr(t) = [θ(t) - a·r(t)]dt + σ·dW(t)
+        // Discretized using Euler-Maruyama scheme
         for (int i = 0; i < n_steps; i++) {
+            // Drift term: θ(t) - a·r(t) integrated over [t, t+dt]
+            // Pre-computed in d_drift_table for efficiency
             float drift = d_drift_table[i];
+
             float G = curand_normal(&local);
+
+             // Exact discretization of Hull-White model:
+            // r(t+dt) = r(t)·e^(-a·dt) + drift + σ·√[(1-e^(-2a·dt))/(2a)]·G
+            // where d_exp_adt = e^(-a·dt) and d_sig_st = σ·√[(1-e^(-2a·dt))/(2a)]
             float r_next = r * d_exp_adt + drift + d_sig_st * G;
+            
+             // Trapezoidal integration: ∫[t,t+dt] r(s)ds ≈ 0.5·dt·(r(t) + r(t+dt))
             integral += 0.5f * d_dt * (r + r_next);
+             // Update short rate for next step
             r = r_next;
         }
         
+        // At time S1, compute bond price P(S1, S2) using Hull-White formula
+        // P(S1,S2) = A(S1,S2)·exp(-B(S1,S2)·r(S1))
         float P = compute_P_HW(S1, S2, r, d_a, d_sigma, d_P_market, d_f_market);
         float val = expf(-integral) * fmaxf(P - K, 0.0f);
         
+        // Accumulate result atomically to global sum
+        // Multiple threads may write simultaneously, hence atomic operation
         atomicAdd(ZBC_sum, val);
     }
 }
+
+/**
+ * Helper Function: Price ZBC Option
+ * 
+ * Launches the simple ZBC pricing kernel and returns the Monte Carlo estimate.
+ * Used by the finite difference method to compute option prices at different
+ * volatility levels.
+ * 
+ * The RNG states passed to this function should be pre-initialized to ensure
+ * Common Random Numbers (CRN) across multiple calls. The caller is responsible
+ * for backing up and restoring states between calls.
+ * 
+ */
 
 float run_zbc_price(float S1, float S2, float K, 
                     const float* d_P_market, const float* d_f_market, 
@@ -202,13 +234,19 @@ float run_zbc_price(float S1, float S2, float K,
     float h_sum;
     cudaMalloc(&d_sum, sizeof(float));
     cudaMemset(d_sum, 0, sizeof(float));
-
+    
+    // Launch kernel to simulate N_PATHS paths
+    // Uses NB blocks of NTPB threads each
     simulate_ZBC_simple<<<NB, NTPB>>>(d_sum, d_states, S1, S2, K, d_P_market, d_f_market);
+    
+     // Wait for kernel to complete
     cudaDeviceSynchronize();
     
+     // Copy accumulated sum back to host
     cudaMemcpy(&h_sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
     cudaFree(d_sum);
     
+     // Return Monte Carlo average: E[discounted_payoff] = sum / N_PATHS
     return h_sum / N_PATHS;
 }
 
