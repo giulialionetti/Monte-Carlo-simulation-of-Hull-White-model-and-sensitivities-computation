@@ -189,6 +189,21 @@ inline void load_array(const char* filename, float* data, int n) {
     printf("Loaded %s (%d floats)\n", filename, n);
 }
 
+/**
+ * Load market data (P and f) from host arrays to device arrays.
+ * 
+ * @param h_P Host array for P(0,T)
+ * @param h_f Host array for f(0,T)
+ * @param d_P Pointer to device array for P(0,T)
+ * @param d_f Pointer to device array for f(0,T)
+ */
+void load_market_data_to_device(float h_P[N_MAT], float h_f[N_MAT], float** d_P, float** d_f) { 
+    cudaMalloc(d_P, N_MAT * sizeof(float));
+    cudaMalloc(d_f, N_MAT * sizeof(float));
+    cudaMemcpy(*d_P, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(*d_f, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
+}
+
 /* DEVICE FUNCTIONS
  * 
  * These inline device functions are used in CUDA kernels for:

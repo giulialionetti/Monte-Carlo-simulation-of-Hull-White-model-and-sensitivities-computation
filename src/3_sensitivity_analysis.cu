@@ -524,16 +524,13 @@ int main() {
     printf("---Question 3: Sensitivity Analysis---\n");
     printf("\n");
 
-    // Load Market Data
     float h_P[N_MAT], h_f[N_MAT];
     load_array(P_FILE, h_P, N_MAT);
     load_array(F_FILE, h_f, N_MAT);
-
+    
     float *d_P_market, *d_f_market;
-    cudaMalloc(&d_P_market, N_MAT * sizeof(float));
-    cudaMalloc(&d_f_market, N_MAT * sizeof(float));
-    cudaMemcpy(d_P_market, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_f_market, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
+    load_market_data_to_device(h_P, h_f, &d_P_market, &d_f_market);
+    check_cuda("cudaMemcpy market data");
 
     // Setup RNG
     curandState *d_states;
