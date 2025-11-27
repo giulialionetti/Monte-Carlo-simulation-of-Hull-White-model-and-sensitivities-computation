@@ -64,6 +64,7 @@ __constant__ float d_sig_st; // sigma*sqrt[(1-e^{-2adt})/(2a)]
 __constant__ float d_one_minus_exp_adt_over_a; // (1 - e^{-adt})/a
 __constant__ float d_one_minus_exp_adt_over_a_sq; // ((1 - e^{-adt})/a)^2
 __constant__ float d_drift_table[N_STEPS]; // Precomputed drift integral table
+__constant__ float d_sigma_drift_table[N_STEPS]; // Drift term in the sensitivity process
 
 // Initialize constant memory with precomputed values
 void compute_constants() {
@@ -82,16 +83,22 @@ void compute_constants() {
     cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a, &h_one_minus_exp_adt_over_a, sizeof(float));
     cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a_sq, &h_one_minus_exp_adt_over_a_sq, sizeof(float));
 
-    // Precompute drift integral table
-    float h_drift[N_STEPS];
+    // Precompute drift integral tables
+    float h_drift[N_STEPS], h_sigma_drift[N_STEPS];
     for (int i = 0; i < N_STEPS; i++) {
-        float t = i * H_DT;
-        float first_term = ((t + H_DT) - h_exp_adt * t) / H_A - h_one_minus_exp_adt_over_a_sq;
-        h_drift[i] = (t < 5.0f) ? 
+        float s = i * H_DT;
+        float t = (i + 1) * H_DT;
+
+        float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
+        h_drift[i] = (s < 5.0f) ? 
             (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
             (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
+        
+        float sigma_term = (2.0f * H_SIGMA * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
+        h_sigma_drift[i] = sigma_term / (H_A * H_A);
     }
     cudaMemcpyToSymbol(d_drift_table, h_drift, N_STEPS * sizeof(float));
+    cudaMemcpyToSymbol(d_sigma_drift_table, h_sigma_drift, N_STEPS * sizeof(float));
 }
 
 // Utility functions for GPU management and file I/O

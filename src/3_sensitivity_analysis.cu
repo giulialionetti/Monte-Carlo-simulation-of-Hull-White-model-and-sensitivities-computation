@@ -7,32 +7,6 @@
  * 2. Compare with Finite Difference approximation
  */
 
-// Constant memory for the specific drift term in the sensitivity process
-__constant__ float d_sigma_drift_table[N_STEPS]; 
-
-/**
- * Precompute the drift increment for the sensitivity process sensitivity_r(t).
- * Increment = (2*sigma * e^(-at) * [cosh(at) - cosh(as)]) / a^2
- * where t = s + dt
- */
-void compute_sigma_drift_table() {
-    float h_sigma_drift[N_STEPS];
-    
-    for (int i = 0; i < N_STEPS; i++) {
-        float s = i * H_DT;
-        float t = (i + 1) * H_DT;
-        
-        // Term from eq 390 M_{s,t}
-        // The process is: dr_sig(t) = dr_sig(s)*exp(-a*dt) + INCREMENT
-        // INCREMENT = (2*sigma*e^(-at) * [cosh(at) - cosh(as)]) / a^2
-        
-        float term = (2.0f * H_SIGMA * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
-        h_sigma_drift[i] = term / (H_A * H_A);
-    }
-    
-    cudaMemcpyToSymbol(d_sigma_drift_table, h_sigma_drift, N_STEPS * sizeof(float));
-}
-
 /**
  * Analytical derivative of Bond Price P(S1, S2) with respect to sigma: partial_sigma P(S1, S2)
  */
@@ -327,8 +301,6 @@ void run_sensitivity_mc(const float* d_P_market, const float* d_f_market,
     float* d_sens_sum;
     cudaMalloc(&d_sens_sum, sizeof(float));
     cudaMemset(d_sens_sum, 0, sizeof(float));
-    
-    compute_sigma_drift_table();
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start); 
