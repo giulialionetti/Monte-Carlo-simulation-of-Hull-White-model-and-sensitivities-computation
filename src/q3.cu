@@ -254,9 +254,8 @@ float run_zbc_price(float S1, float S2, float K,
 void run_sensitivity_mc(const float* d_P_market, const float* d_f_market, 
                         curandState* d_states, float* h_result_sens) {
     printf("\n");
-    printf("================================================================================\n");
-    printf("PATHWISE DERIVATIVE METHOD\n");
-    printf("================================================================================\n\n");
+    printf("---PATHWISE DERIVATIVE METHOD---\n");
+    printf("\n\n");
     
     float S1 = 5.0f;
     float S2 = 10.0f;
@@ -365,7 +364,7 @@ void run_sensitivity_mc(const float* d_P_market, const float* d_f_market,
 void benchmark_block_sizes(const float* d_P_market, const float* d_f_market, 
                            curandState* d_states, float S1, float S2, float K) {
     printf("\n");
-    printf("BLOCK SIZE OPTIMIZATION SWEEP\n");
+    printf("---BLOCK SIZE OPTIMIZATION SWEEP---\n");
     printf("\n");
     
     printf("Testing different block sizes to find optimal configuration.\n");
@@ -551,7 +550,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
 
 int main() {
     select_gpu();
-    printf("Question 3: Sensitivity Analysis)\n");
+    printf("---Question 3: Sensitivity Analysis---\n");
     printf("\n");
 
     // Load Market Data
