@@ -1,89 +1,43 @@
-
 /*
- *  this part of the code computes P(0,T) and f(0,T) for T ∈ [0, 10] using Monte Carlo simulation.
+ *  This part of the code computes P(0,T) and f(0,T) for T in [0, 10] using Monte Carlo simulation.
  * 
  *   the following optimizations have been implemented:
  *   - Antithetic variates (variance reduction)
  *   - Precomputed drift table (constant memory)
  *   - Shared memory reduction
  *   - Fast math compiler flag
+
+
+ * Output:
+ * - P(0,T) for T in [0, 10] years (saved to data/P.bin)
+ * - f(0,T) for T in [0, 10] years (saved to data/f.bin)
  */
 
 
 #include "common.cuh"
+#include "output.cuh"
 
-/* 
- * Constant memory for device access
+/**
+ * Simulate zero-coupon bond prices using Hull-White model with antithetic variates.
  * 
- * These values are computed once on host and copied to GPU constant memory
- * for fast, cached access by all threads.
- *  
+ * For each path, we simulate two trajectories using G and -G (antithetic pair)
+ * to reduce variance. The short rate evolution follows:
+ * 
+ *   r(t+dt) = r(t)e^(-a*dt) + drift_integral + sigma * √[(1-e^(-2a*dt))/(2a)] * G
+ * 
+ * Bond prices are computed via: P(0,T) = E[exp(-\int_0^T r(s)ds)]
+ * 
+ * The integral (\int_0^T r(s)ds) is approximated using the trapezoidal rule.
+ * Results are accumulated in shared memory before writing to global memory
+ * to reduce atomic operation overhead.
+ * 
+ * @param P_sum Global memory array to accumulate bond price sums [N_MAT]
+ * @param states cuRAND states for random number generation [N_PATHS]
  */
-__constant__ float d_a;
-__constant__ float d_sigma;
-__constant__ float d_r0;
-__constant__ float d_dt;
-__constant__ float d_exp_adt;
-__constant__ float d_sig_st;
-__constant__ float d_one_minus_exp_adt_over_a;
-__constant__ float d_one_minus_exp_adt_over_a_sq;
-__constant__ float d_drift_table[N_STEPS];
 
-
-/*
- * Initialize constant memory with precomputed values
- * 
- * The Hull-White transition density is:
- *   r(t+Δt) = m_{s,t} + Σ_{s,t}·G,  where G ~ N(0,1)
- * 
- * m_{s,t} = r(s)·e^{-aΔt} + ∫ₛᵗ e^{-a(t-u)}θ(u)du
- * Σ_{s,t} = σ·√[(1-e^{-2aΔt})/(2a)]
- * 
- * We precompute the drift integral for each time step to avoid
- * redundant computation across all paths.
-  */
-void compute_constants() {
-    float h_exp_adt = expf(-H_A * H_DT);
-    float h_sig_st = H_SIGMA * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
-    float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / H_A;
-    float h_one_minus_exp_adt_over_a_sq = h_one_minus_exp_adt_over_a / H_A;
-
-    cudaMemcpyToSymbol(d_a, &H_A, sizeof(float));
-    cudaMemcpyToSymbol(d_sigma, &H_SIGMA, sizeof(float));
-    cudaMemcpyToSymbol(d_r0, &H_R0, sizeof(float));
-    cudaMemcpyToSymbol(d_dt, &H_DT, sizeof(float));
-    cudaMemcpyToSymbol(d_exp_adt, &h_exp_adt, sizeof(float));
-    cudaMemcpyToSymbol(d_sig_st, &h_sig_st, sizeof(float));
-    cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a, &h_one_minus_exp_adt_over_a, sizeof(float));
-    cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a_sq, &h_one_minus_exp_adt_over_a_sq, sizeof(float));
-
-    // Precompute drift integral table
-    float h_drift[N_STEPS];
-    for (int i = 0; i < N_STEPS; i++) {
-        float t = i * H_DT;
-        float first_term = ((t + H_DT) - h_exp_adt * t) / H_A - h_one_minus_exp_adt_over_a_sq;
-        h_drift[i] = (t < 5.0f) ? 
-            (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
-            (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
-    }
-    cudaMemcpyToSymbol(d_drift_table, h_drift, N_STEPS * sizeof(float));
-}
-
-/* 
- * Monte Carlo simulation kernel with antithetic variates
- * 
- * For each random number G, we simulate two paths:
- *   Path 1: uses +G
- *   Path 2: uses -G (antithetic)
- * 
- * These paths are negatively correlated, reducing variance when averaged.
- * The integral ∫r(s)ds is computed using the trapezoidal rule.
- * 
- * Shared memory is used to accumulate partial sums within each block
- * before writing to global memory, reducing atomic contention.
- *  */
 __global__ void simulate_zcb(float* P_sum, curandState* states) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
 
     __shared__ float s_P_sum[N_MAT];
     if (threadIdx.x < N_MAT) {
@@ -94,7 +48,11 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
     if (pid < N_PATHS) {
         curandState local = states[pid];
 
-        atomicAdd(&s_P_sum[0], 2.0f);
+        float p0_warp = 2.0f * 32;
+        
+        if (lane == 0) {
+            atomicAdd(&s_P_sum[0], p0_warp);
+        }
 
         float r1 = d_r0, r2 = d_r0;
         float integral1 = 0.0f, integral2 = 0.0f;
@@ -114,11 +72,17 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
             if (i % SAVE_STRIDE == 0) {
                 int m = i / SAVE_STRIDE;
                 if (m < N_MAT) {
-                    atomicAdd(&s_P_sum[m], expf(-integral1) + expf(-integral2));
+                    float p0_m = expf(-integral1) + expf(-integral2);
+                    #pragma unroll
+                    for (int offset = 16; offset > 0; offset /= 2) {
+                        p0_m += __shfl_down_sync(0xFFFFFFFF, p0_m, offset);
+                    }
+                    if (lane == 0) {
+                        atomicAdd(&s_P_sum[m], p0_m);
+                    }
                 }
             }
         }
-        
         states[pid] = local;
     }
     
@@ -128,22 +92,33 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
     }
 }
 
-/* 
- * Compute averages and forward rates in a single kernel
+/**
+ * Compute zero-coupon bond prices and forward rates from simulation results.
  * 
- * P(0,T) = P_sum[T] / n_paths
- * f(0,T) = -∂ln(P)/∂T ≈ -(ln P[T+1] - ln P[T-1]) / (2·ΔT)
+ * Bond prices: P(0,T) = P_sum[T] / (2 * N_PATHS)
+ * Forward rates: f(0,T) = -\partial ln(P(0,T)) / \partial T
  * 
- * Central differences are used for interior points.
- * Forward/backward differences are used at boundaries.
- * */
+ * Forward rates are computed using finite differences:
+ * - Central difference for interior points: [ln P(T+dT) - ln P(T-dT)] / (2dT)
+ * - Forward difference at T=0: [ln P(dT) - ln P(0)] / dT
+ * - Backward difference at T=T_max: [ln P(T_max) - ln P(T_max-dT)] / dT
+ * 
+ * @param d_P Output array of averaged bond prices [N_MAT]
+ * @param d_f Output array of forward rates [N_MAT]
+ * @param d_P_sum Input array of accumulated sums from simulation [N_MAT]
+ * @param n_mat Number of maturity points
+ * @param n_paths Total number of paths (including antithetic)
+ * @param dT Maturity grid spacing
+ */
+
+
 __global__ void compute_average_and_forward(
     float* d_P,  // Output: averaged bond prices
     float* d_f,  // Output: forward rates
-     float* d_P_sum, // Input: raw sums from simulation
+    float* d_P_sum, // Input: raw sums from simulation
     int n_mat, // Number of maturities
-     int n_paths, // Number of paths (2×N_PATHS for antithetic)
-      float dT // Maturity spacing
+    int n_paths, // Number of paths (2*N_PATHS for antithetic)
+    float inv_dT // (1 / Maturity spacing)
 ) {
     __shared__ float s_P[N_MAT];
     int m = threadIdx.x;
@@ -158,16 +133,10 @@ __global__ void compute_average_and_forward(
     
     //Compute forward rates via finite differences
     if (m < n_mat) {
-        if (m == 0) {
-             // Forward difference at left boundary
-            d_f[m] = -(logf(s_P[1]) - logf(s_P[0])) / dT;
-        } else if (m == n_mat - 1) {
-             // Backward difference at right boundary
-            d_f[m] = -(logf(s_P[m]) - logf(s_P[m-1])) / dT;
-        } else {
-             // Central difference for interior points
-            d_f[m] = -(logf(s_P[m+1]) - logf(s_P[m-1])) / (2.0f * dT);
-        }
+        int first_idx = (m == 0) ? 0 : m - 1;
+        int last_idx = (m == n_mat - 1) ? n_mat - 1 : m + 1;
+        float scale = ((m == 0) || (m == n_mat - 1)) ? 1.0f : 0.5f;
+        d_f[m] = -scale * inv_dT * (logf(s_P[last_idx]) - logf(s_P[first_idx]));
     }
 }
 
@@ -205,7 +174,7 @@ int main() {
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     check_cuda("init_rng");
     cudaDeviceSynchronize();
-    printf("RNG initialized ✓\n");
+    printf("RNG initialized\n");
     
     // Run simulation
     printf("Running Monte Carlo simulation...\n");
@@ -221,11 +190,11 @@ int main() {
     
     float sim_ms;
     cudaEventElapsedTime(&sim_ms, start, stop);
-    printf("Simulation complete ✓\n");
+    printf("Simulation complete\n");
     
     // Compute averages and forward rates
     compute_average_and_forward<<<1, 128>>>(
-        d_P, d_f, d_P_sum, N_MAT, 2 * N_PATHS, H_MAT_SPACING
+        d_P, d_f, d_P_sum, N_MAT, 2 * N_PATHS, 1 / H_MAT_SPACING
     );
     check_cuda("compute_average_and_forward");
     cudaDeviceSynchronize();
@@ -235,12 +204,12 @@ int main() {
     cudaMemcpy(h_f, d_f, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
     
     // Print results
-    printf("\n");
+    printf("\n"); 
    
     printf("RESULTS\n");
     printf("T (years)    P(0,T)         f(0,T)\n");
     
-    for (int i = 0; i <= 100; i += 10) {
+    for (int i = 0; i < N_MAT; i += SAVE_STRIDE) {
         printf("%5.1f        %.6f       %7.4f%%\n", 
                i * H_MAT_SPACING, h_P[i], h_f[i] * 100.0f);
     }
@@ -249,11 +218,11 @@ int main() {
     // Sanity checks
     printf("\n=== Sanity Checks ===\n");
     printf("P(0,0) = 1.0:      %.6f %s\n", h_P[0], 
-           (h_P[0] > 0.99f && h_P[0] < 1.01f) ? "✓" : "✗");
+           (h_P[0] > 0.99f && h_P[0] < 1.01f) ? "OK" : "ERROR");
     printf("P(0,10) ~ 0.87:    %.6f %s\n", h_P[100], 
-           (h_P[100] > 0.3f && h_P[100] < 0.9f) ? "✓" : "✗");
+           (h_P[100] > 0.3f && h_P[100] < 0.9f) ? "OK" : "ERROR");
     printf("f(0,0) ~ 1.2%%:     %.4f%% %s\n", h_f[0] * 100.0f, 
-           (h_f[0] > 0.01f && h_f[0] < 0.02f) ? "✓" : "✗");
+           (h_f[0] > 0.01f && h_f[0] < 0.02f) ? "OK" : "ERROR");
     
     // Performance
     printf("\n=== Performance ===\n");
@@ -261,11 +230,50 @@ int main() {
     printf("Effective paths: %d\n", N_PATHS * 2);
     printf("Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
     
+    summary_init("data/summary.txt");
+
     // Save results
     printf("\n=== Saving Results ===\n");
     save_array(P_FILE, h_P, N_MAT);
     save_array(F_FILE, h_f, N_MAT);
-    printf("Results saved for Q2/Q3 ✓\n");
+    printf("Results saved for Q2/Q3\n");
+
+    // Write JSON output
+    FILE* json = json_open("data/q1_results.json", "Q1: Zero-Coupon Bond Pricing");
+    if (json) {
+        json_write_array(json, "P", h_P, N_MAT);
+        fprintf(json, ",\n");
+        json_write_array(json, "f", h_f, N_MAT);
+        fprintf(json, ",\n");
+        json_write_performance(json, sim_ms, N_PATHS * 2);
+        fprintf(json, ",\n");
+        
+        fprintf(json, "  \"validation\": {\n");
+        fprintf(json, "    \"P_0_0\": %.8f,\n", h_P[0]);
+        fprintf(json, "    \"P_0_10\": %.8f,\n", h_P[100]);
+        fprintf(json, "    \"f_0_0\": %.8f\n", h_f[0]);
+        fprintf(json, "  }\n");
+        
+        json_close(json);
+        printf("Saved data/q1_results.json\n");
+    }
+    
+    // Write CSV for plotting
+    csv_write_timeseries("data/P_curve.csv", "P(0 T)", h_P, N_MAT, H_MAT_SPACING);
+    csv_write_timeseries("data/f_curve.csv", "f(0 T)", h_f, N_MAT, H_MAT_SPACING);
+    
+    // Append to summary
+    summary_append("data/summary.txt", "Q1: ZERO-COUPON BOND PRICING");
+    FILE* sum = fopen("data/summary.txt", "a");
+    fprintf(sum, "\nKey Results:\n");
+    fprintf(sum, "  P(0,0) = %.8f (expected: 1.0)\n", h_P[0]);
+    fprintf(sum, "  P(0,10) = %.8f\n", h_P[100]);
+    fprintf(sum, "  f(0,0) = %.4f%% (expected: ~1.2%%)\n", h_f[0] * 100.0f);
+    fprintf(sum, "\nPerformance:\n");
+    fprintf(sum, "  Simulation time: %.2f ms\n", sim_ms);
+    fprintf(sum, "  Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
+    fclose(sum);
+    
     
     // Cleanup
     free(h_P);

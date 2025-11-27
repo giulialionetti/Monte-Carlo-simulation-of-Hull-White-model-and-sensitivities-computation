@@ -1,13 +1,3 @@
-# all:
-# nvcc -O3 -arch=sm_70 --use_fast_math -lcurand main.cu -o hw
-
-# run: all
-#./hw
-
-#clean:
-#rm -f hw
-
-
 NVCC = nvcc
 FLAGS = -O3 --use_fast_math -arch=sm_70 -lcurand
 INC = -I include
@@ -16,33 +6,39 @@ BIN = bin
 
 all: q1 q2 q3
 
-q1: $(SRC)/q1.cu
-	@mkdir -p $(BIN) data
+q1: $(SRC)/1_bond_pricing.cu
+	@mkdir -p $(BIN) data plots
 	$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
 
-q2: $(SRC)/q2.cu
-	@mkdir -p $(BIN)
+q2: $(SRC)/2_option_pricing.cu
+	@mkdir -p $(BIN) data plots
 	$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
 
-#q3: $(SRC)/q3_sensitivities.cu
- #@mkdir -p $(BIN) data
-#$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
+q3: $(SRC)/3_sensitivity_analysis.cu
+	@mkdir -p $(BIN) data plots
+	$(NVCC) $(FLAGS) $(INC) $< -o $(BIN)/$@
 
-# Run targets
-run-q1: main
-	CUDA_VISIBLE_DEVICES=3 ./$(BIN)/q1
+run-q1: q1
+	@mkdir -p data plots
+	CUDA_VISIBLE_DEVICES=2 ./$(BIN)/q1
 
-run-q2a: q2
-	./$(BIN)/q2
+run-q2: q2
+	@mkdir -p data plots
+	CUDA_VISIBLE_DEVICES=2 ./$(BIN)/q2
 
+run-q3: q3
+	@mkdir -p data plots
+	CUDA_VISIBLE_DEVICES=2 ./$(BIN)/q3
 
-#run-q3: q3
-#CUDA_VISIBLE_DEVICES=3 ./$(BIN)/q3
+run-all: run-q1 run-q2 run-q3
 
-# Run all in sequence
-run-all: run-q1 run-q2 #run-q2b run-q3
+analyze: run-all
+	python3 analyze.py
 
 clean:
-	rm -rf $(BIN) data/*.bin
+	rm -rf $(BIN) data/*.json data/*.csv data/summary.txt plots/*.png
 
-.PHONY: all clean run-q1 run-q2 # run-q2b run-q3 run-all
+clean-all:
+	rm -rf $(BIN) data plots
+
+.PHONY: all clean clean-all run-q1 run-q2 run-q3 run-all analyze
