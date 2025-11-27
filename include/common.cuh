@@ -302,6 +302,26 @@ __host__ __device__ inline float theta_func(float t) {
     return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
 }
 
+/**
+ * Evolve Hull-White short rate and integral for one time step.
+ * r(t+dt) = r(t)e^(-a*dt) + drift_integral + sigma * sqrt[(1-e^(-2a*dt))/(2a)] * G
+ * 
+ * @param r Pointer to current short rate
+ * @param integral Pointer to accumulated integral of short rate
+ * @param drift Drift term for the current time step
+ * @param sig_G Stochastic term (sigma * G)
+ * @param exp_adt Precomputed e^{-a*dt}
+ * @param dt Time step size
+ */
+__device__ inline void evolve_hull_white_step(
+    float* r, float* integral, float drift, 
+    float sig_G, float exp_adt, float dt
+) {
+    float r_next = __fmaf_rn(*r, exp_adt, drift + sig_G);
+    *integral += 0.5f * (*r + r_next) * dt; // Trapezoidal rule
+    *r = r_next;
+}
+
 
 /**
  * Initialize cuRAND states for Monte Carlo simulation.

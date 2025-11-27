@@ -179,18 +179,22 @@ __global__ void simulate_ZBC(float* ZBC_sum, curandState* states,
         float integral1 = 0.0f, integral2 = 0.0f;
 
         int n_steps_S1 = (int)(S1 / d_dt);
+        const float exp_adt = d_exp_adt;      // Cache in register
+        const float sig_st = d_sig_st;        // Cache in register
 
         for (int i = 1; i <= n_steps_S1; i++) {
             float drift = d_drift_table[i - 1];
             float G = curand_normal(&local);
+            const float sig_G = sig_st * G;
 
-            float r1_next = r1 * d_exp_adt + drift + d_sig_st * G;
-            integral1 += 0.5f * (r1 + r1_next) * d_dt;
-            r1 = r1_next;
-
-            float r2_next = r2 * d_exp_adt + drift - d_sig_st * G;
-            integral2 += 0.5f * (r2 + r2_next) * d_dt;
-            r2 = r2_next;
+            evolve_hull_white_step(
+                &r1, &integral1, drift, 
+                sig_G, exp_adt, d_dt
+            );
+            evolve_hull_white_step(
+                &r2, &integral2, drift, 
+                -sig_G, exp_adt, d_dt
+            );
         }
         
         // Use shared device function from common.cuh
@@ -236,9 +240,7 @@ __global__ void simulate_ZBC_optimized(
         float r1 = d_r0, r2 = d_r0;
         float integral1 = 0.0f, integral2 = 0.0f;
 
-        // Precompute constants (compiler optimization)
-        const int n_steps = 500;              // S1/dt = 5.0/0.01 = 500 steps
-        const float half_dt = 0.5f * d_dt;    // For trapezoidal rule
+        const int n_steps = S1 / d_dt;
         const float exp_adt = d_exp_adt;      // Cache in register
         const float sig_st = d_sig_st;        // Cache in register
 
@@ -247,17 +249,16 @@ __global__ void simulate_ZBC_optimized(
         for (int i = 1; i <= n_steps; i++) {
             const float drift = d_drift_table[i - 1];
             const float G = curand_normal(&local);
-            const float sig_G = sig_st * G;   // Compute once, use twice
+            const float sig_G = sig_st * G;   
 
-            // Antithetic path 1: +G
-            const float r1_next = __fmaf_rn(r1, exp_adt, drift + sig_G);
-            integral1 = __fmaf_rn(half_dt, r1 + r1_next, integral1);
-            r1 = r1_next;
-
-            // Antithetic path 2: -G
-            const float r2_next = __fmaf_rn(r2, exp_adt, drift - sig_G);
-            integral2 = __fmaf_rn(half_dt, r2 + r2_next, integral2);
-            r2 = r2_next;
+            evolve_hull_white_step(
+                &r1, &integral1, drift, 
+                sig_G, exp_adt, d_dt
+            );
+            evolve_hull_white_step(
+                &r2, &integral2, drift, 
+                -sig_G, exp_adt, d_dt
+            );
         }
         
         // Compute P(S1, S2) using analytical Hull-White formula

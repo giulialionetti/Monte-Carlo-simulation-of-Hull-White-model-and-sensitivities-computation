@@ -51,17 +51,16 @@ __global__ void simulate_sensitivity(
         for (int i = 1; i <= n_steps_S1; i++) {
             float drift_r = d_drift_table[i - 1];
             float drift_d_sigma_r = d_sigma_drift_table[i - 1]; // The specific drift for sensitivity process
-            
             float G = curand_normal(&local);
 
-            float r_next = r * d_exp_adt + drift_r + d_sig_st * G; 
-            float d_sigma_r_next = d_sigma_r * d_exp_adt + drift_d_sigma_r + (d_sig_st / d_sigma) * G;
-
-            int_r += 0.5f * d_dt * (r + r_next);
-            int_d_sigma_r += 0.5f * d_dt * (d_sigma_r + d_sigma_r_next);
-
-            r = r_next;
-            d_sigma_r = d_sigma_r_next;
+            evolve_hull_white_step(
+                &r, &int_r, drift_r, 
+                d_sig_st * G, d_exp_adt, d_dt
+            );
+            evolve_hull_white_step(
+                &d_sigma_r, &int_d_sigma_r, drift_d_sigma_r, 
+                (d_sig_st / d_sigma) * G, d_exp_adt, d_dt
+            );
         }
 
         // Calculate Prices at S1
