@@ -337,6 +337,27 @@ __device__ inline void evolve_hull_white_step(
     *r = r_next;
 }
 
+ /**
+ * Compute numerical derivative df/dT using finite differences.
+ * 
+ * Uses central differences for interior points and one-sided differences
+ * at boundaries for improved accuracy.
+ * 
+ * @param f Array of forward rates
+ * @param i Index at which to compute derivative
+ * @param n Array length
+ * @param spacing Grid spacing dT
+ * @return df/dT at index i
+ */
+__device__ float compute_derivative(const float* f, int i, int n, float spacing) {
+    if (i == 0) {
+        return (f[1] - f[0]) / spacing;
+    } else if (i == n - 1) {
+        return (f[i] - f[i-1]) / spacing;
+    } else {
+        return (f[i+1] - f[i-1]) / (2.0f * spacing);
+    }
+}
 
 /**
  * Initialize cuRAND states for Monte Carlo simulation.
@@ -347,11 +368,107 @@ __device__ inline void evolve_hull_white_step(
  * @param states Array of cuRAND states (one per path)
  * @param seed Random seed for reproducibility
  */
-
-
 __global__ void init_rng(curandState* states, unsigned long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N_PATHS) curand_init(seed, idx, 0, &states[idx]);
+}
+
+/**
+ * Control variate approach for variance reduction.
+ * 
+ * Control: C = e^(-∫r dt) × P(S₁,S₂)
+ * Known: E[C] = P(0,S₂) = 0.877 (from Q1)
+ * 
+ * Adjusted estimator: ZBC_CV = ZBC + β(E[C] - Ĉ)
+ * where β = -Cov(ZBC,C)/Var(C) ≈ -1 for simplicity
+ */
+__global__ void simulate_ZBC_control_variate(
+    float* ZBC_sum, 
+    float* control_sum,  // NEW: accumulate control variate
+    curandState* states, 
+    float S1, float S2, float K,
+    const float* d_P_market,
+    const float* d_f_market
+) {
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
+
+    __shared__ float warp_ZBC_sums[WARPS_PER_BLOCK];
+    __shared__ float warp_control_sums[WARPS_PER_BLOCK];
+
+    float thread_ZBC = 0.0f;
+    float thread_control = 0.0f;
+
+    if (pid < N_PATHS) {
+        curandState local = states[pid];
+
+        float r1 = d_r0, r2 = d_r0;
+        float integral1 = 0.0f, integral2 = 0.0f;
+
+        int n_steps_S1 = (int)(S1 / d_dt);
+
+        for (int i = 0; i < n_steps_S1; i++) {
+            float drift = d_drift_table[i];
+            float G = curand_normal(&local);
+            float sig_G = d_sig_st * G;
+
+            evolve_hull_white_step(
+                &r1, &integral1, drift, 
+                sig_G, d_exp_adt, d_dt
+            );
+            evolve_hull_white_step(
+                &r2, &integral2, drift, 
+                -sig_G, d_exp_adt, d_dt
+            );
+        }
+        
+        float P1 = compute_P_HW(S1, S2, r1, d_a, d_sigma, d_P_market, d_f_market);
+        float P2 = compute_P_HW(S1, S2, r2, d_a, d_sigma, d_P_market, d_f_market);
+        
+        float discount1 = expf(-integral1);
+        float discount2 = expf(-integral2);
+        
+        // Control variate: discount * P (we know E[this] = P(0,S2))
+        float control1 = discount1 * P1;
+        float control2 = discount2 * P2;
+        
+        // Option payoff
+        float payoff1 = discount1 * fmaxf(P1 - K, 0.0f);
+        float payoff2 = discount2 * fmaxf(P2 - K, 0.0f);
+        
+        thread_ZBC = payoff1 + payoff2;
+        thread_control = control1 + control2;
+        
+        states[pid] = local;
+    }
+    
+    // Warp reduction for ZBC
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        thread_ZBC += __shfl_down_sync(0xffffffff, thread_ZBC, offset);
+        thread_control += __shfl_down_sync(0xffffffff, thread_control, offset);
+    }
+    
+    if (lane == 0) {
+        warp_ZBC_sums[warp_id] = thread_ZBC;
+        warp_control_sums[warp_id] = thread_control;
+    }
+    __syncthreads();
+    
+    if (warp_id == 0) {
+        float warp_ZBC = (lane < WARPS_PER_BLOCK) ? warp_ZBC_sums[lane] : 0.0f;
+        float warp_control = (lane < WARPS_PER_BLOCK) ? warp_control_sums[lane] : 0.0f;
+        
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            warp_ZBC += __shfl_down_sync(0xffffffff, warp_ZBC, offset);
+            warp_control += __shfl_down_sync(0xffffffff, warp_control, offset);
+        }
+        
+        if (lane == 0) {
+            atomicAdd(ZBC_sum, warp_ZBC);
+            atomicAdd(control_sum, warp_control);
+        }
+    }
 }
 
 #endif // COMMON_CUH

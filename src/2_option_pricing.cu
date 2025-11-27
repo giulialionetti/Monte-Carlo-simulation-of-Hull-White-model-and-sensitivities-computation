@@ -12,30 +12,6 @@
  *      analytical Hull-White formulas and Monte Carlo simulation
  */
 
-
-/**
- * Compute numerical derivative df/dT using finite differences.
- * 
- * Uses central differences for interior points and one-sided differences
- * at boundaries for improved accuracy.
- * 
- * @param f Array of forward rates
- * @param i Index at which to compute derivative
- * @param n Array length
- * @param spacing Grid spacing dT
- * @return df/dT at index i
- */
-
-__device__ float compute_derivative(const float* f, int i, int n, float spacing) {
-    if (i == 0) {
-        return (f[1] - f[0]) / spacing;
-    } else if (i == n - 1) {
-        return (f[i] - f[i-1]) / spacing;
-    } else {
-        return (f[i+1] - f[i-1]) / (2.0f * spacing);
-    }
-}
-
 /**
  * Recover theta(t) from forward rates using Hull-White calibration formula.
  * 
@@ -368,102 +344,6 @@ void run_q2b(const float* d_P_market, const float* d_f_market) {
     cudaEventDestroy(stop);
 }
 
-/**
- * Control variate approach for variance reduction.
- * 
- * Control: C = e^(-∫r dt) × P(S₁,S₂)
- * Known: E[C] = P(0,S₂) = 0.877 (from Q1)
- * 
- * Adjusted estimator: ZBC_CV = ZBC + β(E[C] - Ĉ)
- * where β = -Cov(ZBC,C)/Var(C) ≈ -1 for simplicity
- */
-__global__ void simulate_ZBC_control_variate(
-    float* ZBC_sum, 
-    float* control_sum,  // NEW: accumulate control variate
-    curandState* states, 
-    float S1, float S2, float K,
-    const float* d_P_market,
-    const float* d_f_market
-) {
-    int pid = blockIdx.x * blockDim.x + threadIdx.x;
-    int lane = threadIdx.x & 31;
-    int warp_id = threadIdx.x >> 5;
-
-    __shared__ float warp_ZBC_sums[WARPS_PER_BLOCK];
-    __shared__ float warp_control_sums[WARPS_PER_BLOCK];
-
-    float thread_ZBC = 0.0f;
-    float thread_control = 0.0f;
-
-    if (pid < N_PATHS) {
-        curandState local = states[pid];
-
-        float r1 = d_r0, r2 = d_r0;
-        float integral1 = 0.0f, integral2 = 0.0f;
-
-        int n_steps_S1 = (int)(S1 / d_dt);
-
-        for (int i = 0; i < n_steps_S1; i++) {
-            float drift = d_drift_table[i];
-            float G = curand_normal(&local);
-
-            float r1_next = r1 * d_exp_adt + drift + d_sig_st * G;
-            integral1 += 0.5f * (r1 + r1_next) * d_dt;
-            r1 = r1_next;
-
-            float r2_next = r2 * d_exp_adt + drift - d_sig_st * G;
-            integral2 += 0.5f * (r2 + r2_next) * d_dt;
-            r2 = r2_next;
-        }
-        
-        float P1 = compute_P_HW(S1, S2, r1, d_a, d_sigma, d_P_market, d_f_market);
-        float P2 = compute_P_HW(S1, S2, r2, d_a, d_sigma, d_P_market, d_f_market);
-        
-        float discount1 = expf(-integral1);
-        float discount2 = expf(-integral2);
-        
-        // Control variate: discount * P (we know E[this] = P(0,S2))
-        float control1 = discount1 * P1;
-        float control2 = discount2 * P2;
-        
-        // Option payoff
-        float payoff1 = discount1 * fmaxf(P1 - K, 0.0f);
-        float payoff2 = discount2 * fmaxf(P2 - K, 0.0f);
-        
-        thread_ZBC = payoff1 + payoff2;
-        thread_control = control1 + control2;
-        
-        states[pid] = local;
-    }
-    
-    // Warp reduction for ZBC
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        thread_ZBC += __shfl_down_sync(0xffffffff, thread_ZBC, offset);
-        thread_control += __shfl_down_sync(0xffffffff, thread_control, offset);
-    }
-    
-    if (lane == 0) {
-        warp_ZBC_sums[warp_id] = thread_ZBC;
-        warp_control_sums[warp_id] = thread_control;
-    }
-    __syncthreads();
-    
-    if (warp_id == 0) {
-        float warp_ZBC = (lane < WARPS_PER_BLOCK) ? warp_ZBC_sums[lane] : 0.0f;
-        float warp_control = (lane < WARPS_PER_BLOCK) ? warp_control_sums[lane] : 0.0f;
-        
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            warp_ZBC += __shfl_down_sync(0xffffffff, warp_ZBC, offset);
-            warp_control += __shfl_down_sync(0xffffffff, warp_control, offset);
-        }
-        
-        if (lane == 0) {
-            atomicAdd(ZBC_sum, warp_ZBC);
-            atomicAdd(control_sum, warp_control);
-        }
-    }
-}
-
 float run_q2b_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
     printf("\n\n=== Q2b: ZBC WITH CONTROL VARIATE ===\n");
     
@@ -550,10 +430,10 @@ int main() {
     check_cuda("cudaMemcpy market data");
     
     compute_constants();  
-     // Q2a: Theta recovery
+    // Q2a: Theta recovery
     run_q2a(h_P, h_f, d_P_market, d_f_market);
-     // Q2b: ZBC option pricing with control variate
-      float ZBC_adjusted = run_q2b_control_variate(d_P_market, d_f_market, h_P[N_MAT-1]);
+    // Q2b: ZBC option pricing with control variate
+    float ZBC_adjusted = run_q2b_control_variate(d_P_market, d_f_market, h_P[N_MAT-1]);
 
     // Append to summary file
     summary_append("data/summary.txt", "Q2: THETA RECOVERY & OPTION PRICING");
