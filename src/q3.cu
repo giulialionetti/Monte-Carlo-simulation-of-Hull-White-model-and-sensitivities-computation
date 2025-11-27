@@ -47,8 +47,7 @@ __device__ float compute_dP_dsigma(float S1, float S2, float P_S1_S2, float d_si
  * * Simulates:
  * 1. r(t): Short rate
  * 2. partial_sigma r(t): Sensitivity process
- * * Computes Equation (388):
- * E [ dP_dsigma * discount * Ind(P>K)  -  (Integral(partial_sigma r(t))) * discount * (P-K)+ ]
+ * * Computes: E [ dP_dsigma * discount * Ind(P>K)  -  (Integral(partial_sigma r(t))) * discount * (P-K)+ ]
  */
 __global__ void simulate_sensitivity(
     float* sens_sum, 
@@ -112,23 +111,61 @@ __global__ void simulate_sensitivity(
         states[pid] = local;
     }
 
-    // Warp Reduction
+    // 2 levels of parallel reduction: Warp + Block
+
+    // 1: Warp-level Reduction using shuffle intrinsics
+    // Within each warp, we reduce using __shfl_down_sync
+    // This is fast because it uses register-to-register communication
+    // No shared memory or synchronization needed within a warp
+
+    // Reduction tree pattern:
+    //   offset=16: lane 0 += lane 16, lane 1 += lane 17, ..., lane 15 += lane 31
+    //   offset=8:  lane 0 += lane 8,  lane 1 += lane 9,  ..., lane 7  += lane 15
+    //   offset=4:  lane 0 += lane 4,  lane 1 += lane 5,  ..., lane 3  += lane 7
+    //   offset=2:  lane 0 += lane 2,  lane 1 += lane 3
+    //   offset=1:  lane 0 += lane 1
+    //
+    // After 5 iterations (log2(32)), lane 0 holds the sum of all 32 threads
     #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
         thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
     }
     if (lane == 0) warp_sums[warp_id] = thread_sum;
+    
+    // Wait for all warps in the block to finish writing to shared memory
     __syncthreads();
 
-    // Block Reduction
+    // 2: Block-level Reduction using first warp
+    // We now have WARPS_PER_BLOCK partial sums in shared memory
+    // Use the first warp to reduce these into a single block sum
+    // Only the first warp (warp_id == 0) participates
+    // Each thread in the first warp reads one warp_sum
     if (warp_id == 0) {
+         // Each thread in first warp loads one warp's sum
+        // Threads beyond WARPS_PER_BLOCK load 0
         float warp_sum = (lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f;
+          // Reduce within the first warp using same shuffle pattern
+        // After this loop, lane 0 holds the entire block's sum
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
             warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);
         }
+        // Thread 0 of warp 0 (i.e., thread 0 of the entire block)
+        // atomically adds the block's sum to the global result
         if (lane == 0) atomicAdd(sens_sum, warp_sum);
     }
+
+    // - Warp-level: O(log2(32)) = 5 shuffle operations
+    // - Block-level: O(log2(WARPS_PER_BLOCK)) shuffle operations
+    // - Global: One atomic operation per block (only NB atomics total)
+    //
+    // For 1024 threads/block:
+    // - 32 warps/block
+    // - Each warp does 5 shuffles (intra-warp reduction)
+    // - First warp does 5 more shuffles (inter-warp reduction)
+    // - One atomic add per block
+    //
+    // This is optimal: O(log N) complexity with minimal synchronization
 }
 
 __global__ void simulate_ZBC_simple(
