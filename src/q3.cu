@@ -202,15 +202,6 @@ float run_zbc_price(float S1, float S2, float K,
     float h_sum;
     cudaMalloc(&d_sum, sizeof(float));
     cudaMemset(d_sum, 0, sizeof(float));
-    
-    // We re-use d_states. Note: To be perfectly rigorous for FD, 
-    // we should re-seed or reset states to ensure we use the SAME random numbers 
-    // for both sigma and sigma+eps (Common Random Numbers), which reduces variance of difference.
-    // However, since we modify the global constant d_sig_st inside the kernel logic implicitly
-    // via compute_constants(), we must ensure the G values are identical.
-    
-    // We will re-initialize RNG with the SAME seed before every call to this function 
-    // in the FD wrapper.
 
     simulate_ZBC_simple<<<NB, NTPB>>>(d_sum, d_states, S1, S2, K, d_P_market, d_f_market);
     cudaDeviceSynchronize();
