@@ -100,7 +100,7 @@ __global__ void simulate_sensitivity(
         
         // Calculate Term 1: dP/dsigma * discount * Indicator(P > K)
         float term1 = (P_val > K) ?
-                      compute_dP_dsigma(S1, S2, P_val, r, d_a, d_sigma) * discount
+                      compute_dP_dsigma(S1, S2, P_val, d_sigma_r, d_a, d_sigma) * discount
                       : 0.0f;
 
         // Calculate Term 2: (Integral(partial_sigma r(t))) * discount * (P - K)+
