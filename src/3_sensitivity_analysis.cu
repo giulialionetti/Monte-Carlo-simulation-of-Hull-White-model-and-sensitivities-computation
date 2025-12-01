@@ -129,6 +129,7 @@ float run_zbc_price(float S1, float S2, float K,
     // Copy accumulated sum back to host
     cudaMemcpy(&h_sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
     cudaFree(d_sum);
+    cudaFree(control_sum);
     
     // Return Monte Carlo average: E[discounted_payoff] = sum / (2*N_PATHS)
     return h_sum / (2*N_PATHS);
