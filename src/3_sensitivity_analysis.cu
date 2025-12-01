@@ -370,6 +370,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     float h_sig_st_minus = sigma_minus * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &sigma_minus, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st_minus, sizeof(float));
+    compute_drift_tables(sigma_minus);
     
     cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
                cudaMemcpyDeviceToDevice);
@@ -379,6 +380,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     float h_sig_st_base = original_sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &original_sigma, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st_base, sizeof(float));
+    compute_drift_tables(original_sigma);
     
     cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
                cudaMemcpyDeviceToDevice);
@@ -389,6 +391,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     float h_sig_st_plus = sigma_plus * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &sigma_plus, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st_plus, sizeof(float));
+    compute_drift_tables(sigma_plus);
     
     cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
                cudaMemcpyDeviceToDevice);
