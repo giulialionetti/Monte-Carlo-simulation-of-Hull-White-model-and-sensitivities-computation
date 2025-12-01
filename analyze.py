@@ -51,7 +51,7 @@ def plot_P_and_f(show=True):
     
     plt.tight_layout()
     plt.savefig('plots/curves.png', dpi=300, bbox_inches='tight')
-    print("✓ Saved plots/curves.png")
+    print("Saved plots/curves.png")
     
     if show:
         plt.show()
@@ -92,7 +92,7 @@ def plot_theta_recovery(show=True):
     
     plt.tight_layout()
     plt.savefig('plots/theta_recovery.png', dpi=300, bbox_inches='tight')
-    print("✓ Saved plots/theta_recovery.png")
+    print("Saved plots/theta_recovery.png")
     
     if show:
         plt.show()
@@ -148,6 +148,70 @@ def plot_sensitivity_comparison(show=True):
     else:
         plt.close()
 
+def plot_reduction_benchmark(show=True):
+    """Plot reduction method performance comparison."""
+    print("\n=== Plotting reduction benchmark ===")
+    
+    try:
+        with open('data/benchmark_reductions.json') as f:
+            bench = json.load(f)
+    except FileNotFoundError:
+        print("Benchmark data not found - run benchmark_reductions first")
+        return
+    
+    methods = [r['method'] for r in bench['results']]
+    times = [r['time_ms'] for r in bench['results']]
+    throughputs = [r['throughput_Mpaths_per_sec'] for r in bench['results']]
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
+    
+    # Plot 1: Execution Time
+    bars1 = ax1.barh(methods, times, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    ax1.set_xlabel('Execution Time (ms)', fontsize=12, fontweight='bold')
+    ax1.set_title('Reduction Method: Execution Time', fontsize=13, fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='x')
+    
+    # Add value labels
+    for bar, time in zip(bars1, times):
+        width = bar.get_width()
+        ax1.text(width, bar.get_y() + bar.get_height()/2.,
+                f'{time:.3f} ms',
+                ha='left', va='center', fontsize=11, fontweight='bold', 
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+    
+    # Plot 2: Throughput
+    bars2 = ax2.barh(methods, throughputs, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    ax2.set_xlabel('Throughput (M paths/sec)', fontsize=12, fontweight='bold')
+    ax2.set_title('Reduction Method: Throughput', fontsize=13, fontweight='bold')
+    ax2.grid(True, alpha=0.3, axis='x')
+    
+    # Add value labels
+    for bar, tput in zip(bars2, throughputs):
+        width = bar.get_width()
+        ax2.text(width, bar.get_y() + bar.get_height()/2.,
+                f'{tput:.2f}',
+                ha='left', va='center', fontsize=11, fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+    
+    plt.tight_layout()
+    plt.savefig('plots/reduction_benchmark.png', dpi=300, bbox_inches='tight')
+    print("✓ Saved plots/reduction_benchmark.png")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
+    
+    # Print speedup analysis
+    baseline = times[0]
+    print("\nSpeedup Analysis (relative to naive atomicAdd):")
+    for method, time in zip(methods, times):
+        speedup = baseline / time
+        improvement = 100.0 * (1.0 - time / baseline)
+        print(f"  {method:30s}: {speedup:.2f}x faster ({improvement:.1f}% improvement)")
+
 def print_summary():
     """Print summary statistics from JSON files."""
     print("\n" + "="*80)
@@ -189,7 +253,7 @@ def print_summary():
         print(f"  Formula:     θ(T) = df/dT + a·f(0,T) + σ²/(2a)·(1-e^(-2aT))")
         print(f"\n  Results:")
         print(f"    Max error:   {q2a['error_metrics']['max_error']:.2e}")
-        print(f"    Status:      {'✓ SUCCESS' if q2a['error_metrics']['success'] else '✗ FAILED'}")
+        print(f"    Status:      {'SUCCESS' if q2a['error_metrics']['success'] else 'FAILED'}")
         print(f"    Target:      < 0.01")
     except FileNotFoundError:
         print("\n[Q2a results not found]")
@@ -262,6 +326,7 @@ def main():
     plot_P_and_f(show=show_plots)
     plot_theta_recovery(show=show_plots)
     plot_sensitivity_comparison(show=show_plots)
+    plot_reduction_benchmark(show=show_plots)
     
     # Print summary
     print_summary()
@@ -273,6 +338,7 @@ def main():
     print("  • plots/curves.png          - Bond prices and forward rates")
     print("  • plots/theta_recovery.png  - Theta function recovery")
     print("  • plots/sensitivity.png     - Vega comparison (if Q3 run)")
+    print("  • plots/reduction_benchmark.png - Reduction methods benchmark")
     print("\nData files:")
     print("  • data/summary.txt          - Text summary")
     print("  • data/q*_results.json      - Detailed JSON results")
