@@ -40,7 +40,7 @@ run-benchmark: benchmark
 
 run-all: run-q1 run-q2 run-q3
 
-analyze: run-all
+analyze: run-all run-benchmark
 	python3 analyze.py
 
 clean:

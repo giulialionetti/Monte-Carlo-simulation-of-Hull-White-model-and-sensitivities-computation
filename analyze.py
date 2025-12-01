@@ -22,15 +22,9 @@ def plot_P_and_f(show=True):
         print("Please run Q1 first to generate the data files.")
         return
     
-    # Debug: Print actual column names
-    print(f"P_df columns: {P_df.columns.tolist()}")
-    print(f"f_df columns: {f_df.columns.tolist()}")
-    
-    # Use actual column names (with spaces, not parentheses with commas)
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
     
     # Plot P(0,T) - Zero-Coupon Bond Prices
-    # Column is 'P(0 T)' with space, not 'P(0,T)' with comma
     ax1.plot(P_df['T'], P_df['P(0 T)'], 'b-', linewidth=2.5, label='P(0,T)')
     ax1.set_xlabel('Maturity T (years)', fontsize=12)
     ax1.set_ylabel('Bond Price P(0,T)', fontsize=12)
@@ -40,7 +34,6 @@ def plot_P_and_f(show=True):
     ax1.set_xlim(0, 10)
     
     # Plot f(0,T) - Forward Rates
-    # Column is 'f(0 T)' with space
     ax2.plot(f_df['T'], f_df['f(0 T)'] * 100, 'r-', linewidth=2.5, label='f(0,T)')
     ax2.set_xlabel('Maturity T (years)', fontsize=12)
     ax2.set_ylabel('Forward Rate f(0,T) (%)', fontsize=12)
@@ -158,36 +151,31 @@ def plot_reduction_benchmark(show=True):
     except FileNotFoundError:
         print("Benchmark data not found - run benchmark_reductions first")
         return
-    
+
     methods = [r['method'] for r in bench['results']]
     times = [r['time_ms'] for r in bench['results']]
     throughputs = [r['throughput_Mpaths_per_sec'] for r in bench['results']]
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
     
-    # Plot 1: Execution Time
-    bars1 = ax1.barh(methods, times, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    bars1 = ax1.barh(methods, times, color=colors[:len(methods)], alpha=0.8, edgecolor='black', linewidth=1.5)
     ax1.set_xlabel('Execution Time (ms)', fontsize=12, fontweight='bold')
     ax1.set_title('Reduction Method: Execution Time', fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='x')
     
-    # Add value labels
     for bar, time in zip(bars1, times):
         width = bar.get_width()
         ax1.text(width, bar.get_y() + bar.get_height()/2.,
                 f'{time:.3f} ms',
-                ha='left', va='center', fontsize=11, fontweight='bold', 
+                ha='left', va='center', fontsize=11, fontweight='bold',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
     
-    # Plot 2: Throughput
-    bars2 = ax2.barh(methods, throughputs, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    bars2 = ax2.barh(methods, throughputs, color=colors[:len(methods)], alpha=0.8, edgecolor='black', linewidth=1.5)
     ax2.set_xlabel('Throughput (M paths/sec)', fontsize=12, fontweight='bold')
     ax2.set_title('Reduction Method: Throughput', fontsize=13, fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='x')
     
-    # Add value labels
     for bar, tput in zip(bars2, throughputs):
         width = bar.get_width()
         ax2.text(width, bar.get_y() + bar.get_height()/2.,
@@ -226,15 +214,15 @@ def print_summary():
         print(f"\n{'='*80}")
         print("Q1: ZERO-COUPON BOND PRICING")
         print(f"{'='*80}")
-        print(f"  Monte Carlo Paths:     {q1['parameters']['effective_paths']:,}")
-        print(f"  Time Steps:            {q1['parameters']['n_steps']:,}")
+        print(f"  Monte Carlo Paths:     {q1['parameters']['N_PATHS']:,}")
+        print(f"  Time Steps:            {q1['parameters']['N_STEPS']:,}")
         print(f"  Variance Reduction:    Antithetic variates")
         print(f"\n  Validation:")
         print(f"    P(0,0)  = {q1['validation']['P_0_0']:.8f}  (should be 1.0)")
         print(f"    P(0,10) = {q1['validation']['P_0_10']:.8f}  (~ 0.87)")
-        print(f"    f(0,0)  = {q1['validation']['f_0_0_pct']:.4f}%  (~ 1.2%)")
+        print(f"    f(0,0)  = {q1['validation']['f_0_0']:.4f}%  (~ 1.2%)")
         print(f"\n  Performance:")
-        print(f"    Simulation time:  {q1['performance']['sim_time_ms']:.2f} ms")
+        print(f"    Simulation time:  {q1['performance']['simulation_time_ms']:.2f} ms")
         print(f"    Throughput:       {q1['performance']['throughput_Mpaths_per_sec']:.2f} M paths/sec")
     except FileNotFoundError:
         print("\n[Q1 results not found]")
@@ -275,9 +263,8 @@ def print_summary():
         print(f"    ZBC value:         {q2b['results']['ZBC_control_variate']:.8f}")
         print(f"    Control deviation: {q2b['results']['control_deviation']:.2e}")
         print(f"\n  Performance:")
-        print(f"    Simulation time:  {q2b['performance']['sim_time_ms']:.2f} ms")
+        print(f"    Simulation time:  {q2b['performance']['simulation_time_ms']:.2f} ms")
         print(f"    Throughput:       {q2b['performance']['throughput_Mpaths_per_sec']:.2f} M paths/sec")
-        print(f"    Effective paths:  {q2b['performance']['effective_paths']:,}")
     except FileNotFoundError:
         print("\n[Q2b results not found]")
     except KeyError as e:
