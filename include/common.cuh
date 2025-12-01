@@ -66,6 +66,29 @@ __constant__ float d_one_minus_exp_adt_over_a_sq; // ((1 - e^{-adt})/a)^2
 __constant__ float d_drift_table[N_STEPS]; // Precomputed drift integral table
 __constant__ float d_sigma_drift_table[N_STEPS]; // Drift term in the sensitivity process
 
+// Precompute drift integral tables and copy to constant memory
+void compute_drift_tables(float sigma) {
+    float h_exp_adt = expf(-H_A * H_DT);
+    float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / H_A;
+    float h_one_minus_exp_adt_over_a_sq = h_one_minus_exp_adt_over_a / H_A;
+
+    float h_drift[N_STEPS], h_sigma_drift[N_STEPS];
+    for (int i = 0; i < N_STEPS; i++) {
+        float s = i * H_DT;
+        float t = (i + 1) * H_DT;
+
+        float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
+        h_drift[i] = (s < 5.0f) ? 
+            (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
+            (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
+        
+        float sigma_term = (2.0f * sigma * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
+        h_sigma_drift[i] = sigma_term / (H_A * H_A);
+    }
+    cudaMemcpyToSymbol(d_drift_table, h_drift, N_STEPS * sizeof(float));
+    cudaMemcpyToSymbol(d_sigma_drift_table, h_sigma_drift, N_STEPS * sizeof(float));
+}
+
 // Initialize constant memory with precomputed values
 void compute_constants() {
     float h_exp_adt = expf(-H_A * H_DT);
@@ -84,21 +107,7 @@ void compute_constants() {
     cudaMemcpyToSymbol(d_one_minus_exp_adt_over_a_sq, &h_one_minus_exp_adt_over_a_sq, sizeof(float));
 
     // Precompute drift integral tables
-    float h_drift[N_STEPS], h_sigma_drift[N_STEPS];
-    for (int i = 0; i < N_STEPS; i++) {
-        float s = i * H_DT;
-        float t = (i + 1) * H_DT;
-
-        float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
-        h_drift[i] = (s < 5.0f) ? 
-            (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
-            (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
-        
-        float sigma_term = (2.0f * H_SIGMA * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
-        h_sigma_drift[i] = sigma_term / (H_A * H_A);
-    }
-    cudaMemcpyToSymbol(d_drift_table, h_drift, N_STEPS * sizeof(float));
-    cudaMemcpyToSymbol(d_sigma_drift_table, h_sigma_drift, N_STEPS * sizeof(float));
+    compute_drift_tables(H_SIGMA);
 }
 
 // Utility functions for GPU management and file I/O
@@ -360,6 +369,39 @@ __device__ float compute_derivative(const float* f, int i, int n, float spacing)
 }
 
 /**
+ * Warp-level reduction using shuffle intrinsics.
+ * Reduces thread_sum across all 32 threads in a warp.
+ * After this, lane 0 holds the warp sum.
+ * 
+ * @param thread_sum Value to reduce (modified in-place)
+ */
+__device__ inline void warp_reduce(float& thread_sum) {
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
+    }
+}
+
+/**
+ * Block-level reduction from warp sums.
+ * First warp reduces across all warp_sums in shared memory.
+ * 
+ * @param warp_sums Shared memory array of warp sums [WARPS_PER_BLOCK]
+ * @param lane Thread index within warp (threadIdx.x & 31)
+ * @param warp_id Warp index within block (threadIdx.x >> 5)
+ * @return Block sum (valid only in lane 0 of warp 0)
+ */
+__device__ inline float block_reduce(float* warp_sums, int lane, int warp_id) {
+    float warp_sum = (warp_id == 0) ? 
+        ((lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f) : 0.0f;
+    
+    if (warp_id == 0) {
+        warp_reduce(warp_sum);
+    }
+    return warp_sum;
+}
+
+/**
  * Initialize cuRAND states for Monte Carlo simulation.
  * 
  * Each thread initializes its own RNG state with a unique sequence number
@@ -469,42 +511,6 @@ __global__ void simulate_ZBC_control_variate(
             atomicAdd(control_sum, warp_control);
         }
     }
-}
-
-/**
- * Warp-level reduction using shuffle intrinsics.
- * Reduces thread_sum across all 32 threads in a warp.
- * After this, lane 0 holds the warp sum.
- * 
- * @param thread_sum Value to reduce (modified in-place)
- */
-__device__ inline void warp_reduce(float& thread_sum) {
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
-    }
-}
-
-/**
- * Block-level reduction from warp sums.
- * First warp reduces across all warp_sums in shared memory.
- * 
- * @param warp_sums Shared memory array of warp sums [WARPS_PER_BLOCK]
- * @param lane Thread index within warp (threadIdx.x & 31)
- * @param warp_id Warp index within block (threadIdx.x >> 5)
- * @return Block sum (valid only in lane 0 of warp 0)
- */
-__device__ inline float block_reduce(float* warp_sums, int lane, int warp_id) {
-    float warp_sum = (warp_id == 0) ? 
-        ((lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f) : 0.0f;
-    
-    if (warp_id == 0) {
-        #pragma unroll
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);
-        }
-    }
-    return warp_sum;
 }
 
 #endif // COMMON_CUH

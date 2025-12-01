@@ -141,7 +141,7 @@ def plot_sensitivity_comparison(show=True):
     
     plt.tight_layout()
     plt.savefig('plots/sensitivity.png', dpi=300, bbox_inches='tight')
-    print("✓ Saved plots/sensitivity.png")
+    print("Saved plots/sensitivity.png")
     
     if show:
         plt.show()
@@ -197,7 +197,7 @@ def plot_reduction_benchmark(show=True):
     
     plt.tight_layout()
     plt.savefig('plots/reduction_benchmark.png', dpi=300, bbox_inches='tight')
-    print("✓ Saved plots/reduction_benchmark.png")
+    print("Saved plots/reduction_benchmark.png")
     
     if show:
         plt.show()
