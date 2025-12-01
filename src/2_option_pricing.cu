@@ -202,10 +202,9 @@ __global__ void simulate_ZBC_optimized(
     const float* __restrict__ d_f_market
 ) {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
-    int lane = threadIdx.x & 31;       // Thread index within warp (0-31)
-    int warp_id = threadIdx.x >> 5;    // Warp index within block
+    int lane = threadIdx.x & 31;
+    int warp_id = threadIdx.x >> 5;
 
-    // One accumulator per warp (max 32 warps per 1024-thread block)
     __shared__ float warp_sums[WARPS_PER_BLOCK];
 
     float thread_sum = 0.0f;
@@ -256,30 +255,19 @@ __global__ void simulate_ZBC_optimized(
         states[pid] = local;
     }
     
-    // Warp-level reduction using shuffle intrinsics (fast!)
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
-    }
+    // Warp reduction
+    warp_reduce(thread_sum);
     
-    // First thread in each warp writes to shared memory
     if (lane == 0) {
         warp_sums[warp_id] = thread_sum;
     }
     __syncthreads();
     
-    // First warp does final reduction across all warps
+    // Block reduction and global atomic
     if (warp_id == 0) {
-        float warp_sum = (lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f;
-        
-        #pragma unroll
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);
-        }
-        
-        // Final atomic to global memory (only once per block)
+        float block_sum = block_reduce(warp_sums, lane, warp_id);
         if (lane == 0) {
-            atomicAdd(ZBC_sum, warp_sum);
+            atomicAdd(ZBC_sum, block_sum);
         }
     }
 }

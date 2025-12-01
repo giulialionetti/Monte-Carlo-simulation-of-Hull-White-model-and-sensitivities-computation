@@ -471,4 +471,40 @@ __global__ void simulate_ZBC_control_variate(
     }
 }
 
+/**
+ * Warp-level reduction using shuffle intrinsics.
+ * Reduces thread_sum across all 32 threads in a warp.
+ * After this, lane 0 holds the warp sum.
+ * 
+ * @param thread_sum Value to reduce (modified in-place)
+ */
+__device__ inline void warp_reduce(float& thread_sum) {
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
+    }
+}
+
+/**
+ * Block-level reduction from warp sums.
+ * First warp reduces across all warp_sums in shared memory.
+ * 
+ * @param warp_sums Shared memory array of warp sums [WARPS_PER_BLOCK]
+ * @param lane Thread index within warp (threadIdx.x & 31)
+ * @param warp_id Warp index within block (threadIdx.x >> 5)
+ * @return Block sum (valid only in lane 0 of warp 0)
+ */
+__device__ inline float block_reduce(float* warp_sums, int lane, int warp_id) {
+    float warp_sum = (warp_id == 0) ? 
+        ((lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f) : 0.0f;
+    
+    if (warp_id == 0) {
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);
+        }
+    }
+    return warp_sum;
+}
+
 #endif // COMMON_CUH

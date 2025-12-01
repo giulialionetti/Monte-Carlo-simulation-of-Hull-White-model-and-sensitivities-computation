@@ -77,10 +77,7 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
                 int m = i / SAVE_STRIDE;
                 if (m < N_MAT) {
                     float p0_m = expf(-integral1) + expf(-integral2);
-                    #pragma unroll
-                    for (int offset = 16; offset > 0; offset /= 2) {
-                        p0_m += __shfl_down_sync(0xFFFFFFFF, p0_m, offset);
-                    }
+                    warp_reduce(p0_m);
                     if (lane == 0) {
                         atomicAdd(&s_P_sum[m], p0_m);
                     }
