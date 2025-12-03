@@ -7,32 +7,6 @@
  * 2. Compare with Finite Difference approximation
  */
 
-// Constant memory for the specific drift term in the sensitivity process
-__constant__ float d_sigma_drift_table[N_STEPS]; 
-
-/**
- * Precompute the drift increment for the sensitivity process sensitivity_r(t).
- * Increment = (2*sigma * e^(-at) * [cosh(at) - cosh(as)]) / a^2
- * where t = s + dt
- */
-void compute_sigma_drift_table() {
-    float h_sigma_drift[N_STEPS];
-    
-    for (int i = 0; i < N_STEPS; i++) {
-        float s = i * H_DT;
-        float t = (i + 1) * H_DT;
-        
-        // Term from eq 390 M_{s,t}
-        // The process is: dr_sig(t) = dr_sig(s)*exp(-a*dt) + INCREMENT
-        // INCREMENT = (2*sigma*e^(-at) * [cosh(at) - cosh(as)]) / a^2
-        
-        float term = (2.0f * H_SIGMA * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
-        h_sigma_drift[i] = term / (H_A * H_A);
-    }
-    
-    cudaMemcpyToSymbol(d_sigma_drift_table, h_sigma_drift, N_STEPS * sizeof(float));
-}
-
 /**
  * Analytical derivative of Bond Price P(S1, S2) with respect to sigma: partial_sigma P(S1, S2)
  */
@@ -77,17 +51,16 @@ __global__ void simulate_sensitivity(
         for (int i = 1; i <= n_steps_S1; i++) {
             float drift_r = d_drift_table[i - 1];
             float drift_d_sigma_r = d_sigma_drift_table[i - 1]; // The specific drift for sensitivity process
-            
             float G = curand_normal(&local);
 
-            float r_next = r * d_exp_adt + drift_r + d_sig_st * G; 
-            float d_sigma_r_next = d_sigma_r * d_exp_adt + drift_d_sigma_r + (d_sig_st / d_sigma) * G;
-
-            int_r += 0.5f * d_dt * (r + r_next);
-            int_d_sigma_r += 0.5f * d_dt * (d_sigma_r + d_sigma_r_next);
-
-            r = r_next;
-            d_sigma_r = d_sigma_r_next;
+            evolve_hull_white_step(
+                &r, &int_r, drift_r, 
+                d_sig_st * G, d_exp_adt, d_dt
+            );
+            evolve_hull_white_step(
+                &d_sigma_r, &int_d_sigma_r, drift_d_sigma_r, 
+                (d_sig_st / d_sigma) * G, d_exp_adt, d_dt
+            );
         }
 
         // Calculate Prices at S1
@@ -111,106 +84,16 @@ __global__ void simulate_sensitivity(
         states[pid] = local;
     }
 
-    // 2 levels of parallel reduction: Warp + Block
-
-    // 1: Warp-level Reduction using shuffle intrinsics
-    // Within each warp, we reduce using __shfl_down_sync
-    // This is fast because it uses register-to-register communication
-    // No shared memory or synchronization needed within a warp
-
-    // Reduction tree pattern:
-    //   offset=16: lane 0 += lane 16, lane 1 += lane 17, ..., lane 15 += lane 31
-    //   offset=8:  lane 0 += lane 8,  lane 1 += lane 9,  ..., lane 7  += lane 15
-    //   offset=4:  lane 0 += lane 4,  lane 1 += lane 5,  ..., lane 3  += lane 7
-    //   offset=2:  lane 0 += lane 2,  lane 1 += lane 3
-    //   offset=1:  lane 0 += lane 1
-    //
-    // After 5 iterations (log2(32)), lane 0 holds the sum of all 32 threads
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
-    }
+    // Warp-level reduction
+    warp_reduce(thread_sum);
     if (lane == 0) warp_sums[warp_id] = thread_sum;
     
-    // Wait for all warps in the block to finish writing to shared memory
     __syncthreads();
 
-    // 2: Block-level Reduction using first warp
-    // We now have WARPS_PER_BLOCK partial sums in shared memory
-    // Use the first warp to reduce these into a single block sum
-    // Only the first warp (warp_id == 0) participates
-    // Each thread in the first warp reads one warp_sum
+    // Block-level reduction
     if (warp_id == 0) {
-         // Each thread in first warp loads one warp's sum
-        // Threads beyond WARPS_PER_BLOCK load 0
-        float warp_sum = (lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f;
-          // Reduce within the first warp using same shuffle pattern
-        // After this loop, lane 0 holds the entire block's sum
-        #pragma unroll
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);
-        }
-        // Thread 0 of warp 0 (i.e., thread 0 of the entire block)
-        // atomically adds the block's sum to the global result
-        if (lane == 0) atomicAdd(sens_sum, warp_sum);
-    }
-
-    // - Warp-level: O(log2(32)) = 5 shuffle operations
-    // - Block-level: O(log2(WARPS_PER_BLOCK)) shuffle operations
-    // - Global: One atomic operation per block (only NB atomics total)
-    //
-    // For 1024 threads/block:
-    // - 32 warps/block
-    // - Each warp does 5 shuffles (intra-warp reduction)
-    // - First warp does 5 more shuffles (inter-warp reduction)
-    // - One atomic add per block
-    //
-    // This is optimal: O(log N) complexity with minimal synchronization
-}
-
-__global__ void simulate_ZBC_simple(
-    float* ZBC_sum, curandState* states, 
-    float S1, float S2, float K,
-    const float* __restrict__ d_P_market, const float* __restrict__ d_f_market
-) {
-    int pid = blockIdx.x * blockDim.x + threadIdx.x;
-    // Load RNG state (note: we make a LOCAL copy to avoid race conditions)
-    // We don't save state back - caller manages state for CRN
-    if (pid < N_PATHS) {
-        curandState local = states[pid]; 
-        float r = d_r0;
-        float integral = 0.0f;
-        // Simulate from t=0 to t=S1 (option maturity)
-        int n_steps = (int)(S1 / d_dt);
-
-        // Hull-White SDE: dr(t) = [θ(t) - a·r(t)]dt + σ·dW(t)
-        // Discretized using Euler-Maruyama scheme
-        for (int i = 0; i < n_steps; i++) {
-            // Drift term: θ(t) - a·r(t) integrated over [t, t+dt]
-            // Pre-computed in d_drift_table for efficiency
-            float drift = d_drift_table[i];
-
-            float G = curand_normal(&local);
-
-             // Exact discretization of Hull-White model:
-            // r(t+dt) = r(t)·e^(-a·dt) + drift + σ·√[(1-e^(-2a·dt))/(2a)]·G
-            // where d_exp_adt = e^(-a·dt) and d_sig_st = σ·√[(1-e^(-2a·dt))/(2a)]
-            float r_next = r * d_exp_adt + drift + d_sig_st * G;
-            
-             // Trapezoidal integration: ∫[t,t+dt] r(s)ds ≈ 0.5·dt·(r(t) + r(t+dt))
-            integral += 0.5f * d_dt * (r + r_next);
-             // Update short rate for next step
-            r = r_next;
-        }
-        
-        // At time S1, compute bond price P(S1, S2) using Hull-White formula
-        // P(S1,S2) = A(S1,S2)·exp(-B(S1,S2)·r(S1))
-        float P = compute_P_HW(S1, S2, r, d_a, d_sigma, d_P_market, d_f_market);
-        float val = expf(-integral) * fmaxf(P - K, 0.0f);
-        
-        // Accumulate result atomically to global sum
-        // Multiple threads may write simultaneously, hence atomic operation
-        atomicAdd(ZBC_sum, val);
+        float block_sum = block_reduce(warp_sums, lane, warp_id);
+        if (lane == 0) atomicAdd(sens_sum, block_sum);
     }
 }
 
@@ -230,24 +113,26 @@ __global__ void simulate_ZBC_simple(
 float run_zbc_price(float S1, float S2, float K, 
                     const float* d_P_market, const float* d_f_market, 
                     curandState* d_states) {
-    float* d_sum;
+    float* d_sum, *control_sum;
     float h_sum;
     cudaMalloc(&d_sum, sizeof(float));
+    cudaMalloc(&control_sum, sizeof(float));
     cudaMemset(d_sum, 0, sizeof(float));
+    cudaMemset(control_sum, 0, sizeof(float));
     
-    // Launch kernel to simulate N_PATHS paths
+    // Launch kernel to simulate 2*N_PATHS paths
     // Uses NB blocks of NTPB threads each
-    simulate_ZBC_simple<<<NB, NTPB>>>(d_sum, d_states, S1, S2, K, d_P_market, d_f_market);
-    
-     // Wait for kernel to complete
+    simulate_ZBC_control_variate<<<NB, NTPB>>>(d_sum, control_sum, d_states, S1, S2, K, d_P_market, d_f_market);
+    // Wait for kernel to complete
     cudaDeviceSynchronize();
     
-     // Copy accumulated sum back to host
+    // Copy accumulated sum back to host
     cudaMemcpy(&h_sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
     cudaFree(d_sum);
+    cudaFree(control_sum);
     
-     // Return Monte Carlo average: E[discounted_payoff] = sum / N_PATHS
-    return h_sum / N_PATHS;
+    // Return Monte Carlo average: E[discounted_payoff] = sum / (2*N_PATHS)
+    return h_sum / (2*N_PATHS);
 }
 
 
@@ -327,8 +212,6 @@ void run_sensitivity_mc(const float* d_P_market, const float* d_f_market,
     float* d_sens_sum;
     cudaMalloc(&d_sens_sum, sizeof(float));
     cudaMemset(d_sens_sum, 0, sizeof(float));
-    
-    compute_sigma_drift_table();
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start); 
@@ -487,6 +370,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     float h_sig_st_minus = sigma_minus * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &sigma_minus, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st_minus, sizeof(float));
+    compute_drift_tables(sigma_minus);
     
     cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
                cudaMemcpyDeviceToDevice);
@@ -496,6 +380,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     float h_sig_st_base = original_sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &original_sigma, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st_base, sizeof(float));
+    compute_drift_tables(original_sigma);
     
     cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
                cudaMemcpyDeviceToDevice);
@@ -506,6 +391,7 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     float h_sig_st_plus = sigma_plus * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &sigma_plus, sizeof(float));
     cudaMemcpyToSymbol(d_sig_st, &h_sig_st_plus, sizeof(float));
+    compute_drift_tables(sigma_plus);
     
     cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
                cudaMemcpyDeviceToDevice);
@@ -553,16 +439,13 @@ int main() {
     printf("---Question 3: Sensitivity Analysis---\n");
     printf("\n");
 
-    // Load Market Data
     float h_P[N_MAT], h_f[N_MAT];
     load_array(P_FILE, h_P, N_MAT);
     load_array(F_FILE, h_f, N_MAT);
-
+    
     float *d_P_market, *d_f_market;
-    cudaMalloc(&d_P_market, N_MAT * sizeof(float));
-    cudaMalloc(&d_f_market, N_MAT * sizeof(float));
-    cudaMemcpy(d_P_market, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_f_market, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
+    load_market_data_to_device(h_P, h_f, &d_P_market, &d_f_market);
+    check_cuda("cudaMemcpy market data");
 
     // Setup RNG
     curandState *d_states;
@@ -616,7 +499,7 @@ int main() {
     bool magnitude_reasonable = (sens_mc > 0.05f && sens_mc < 0.5f && 
                                  sens_fd > 0.05f && sens_fd < 0.5f);
     printf("  Magnitude Check:            %s\n", 
-           magnitude_reasonable ? "✓ PASS (within reasonable bounds)" : "FAIL");
+           magnitude_reasonable ? "PASS (within reasonable bounds)" : "FAIL");
     
     if (rel_diff_pct < 10.0f) {
         printf("  Agreement Level: EXCELLENT (< 10%% difference)\n");

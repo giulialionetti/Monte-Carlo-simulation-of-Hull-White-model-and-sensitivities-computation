@@ -56,27 +56,28 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
 
         float r1 = d_r0, r2 = d_r0;
         float integral1 = 0.0f, integral2 = 0.0f;
+        const float exp_adt = d_exp_adt;      // Cache in register
+        const float sig_st = d_sig_st;        // Cache in register
 
         for (int i = 1; i <= N_STEPS; i++) {
             float drift = d_drift_table[i - 1];
             float G = curand_normal(&local);
+            const float sig_G = sig_st * G;
 
-            float r1_next = r1 * d_exp_adt + drift + d_sig_st * G;
-            integral1 += 0.5f * (r1 + r1_next) * d_dt;
-            r1 = r1_next;
-
-            float r2_next = r2 * d_exp_adt + drift - d_sig_st * G;
-            integral2 += 0.5f * (r2 + r2_next) * d_dt;
-            r2 = r2_next;
+            evolve_hull_white_step(
+                &r1, &integral1, drift, 
+                sig_G, exp_adt, d_dt
+            );
+            evolve_hull_white_step(
+                &r2, &integral2, drift, 
+                -sig_G, exp_adt, d_dt
+            );
 
             if (i % SAVE_STRIDE == 0) {
                 int m = i / SAVE_STRIDE;
                 if (m < N_MAT) {
                     float p0_m = expf(-integral1) + expf(-integral2);
-                    #pragma unroll
-                    for (int offset = 16; offset > 0; offset /= 2) {
-                        p0_m += __shfl_down_sync(0xFFFFFFFF, p0_m, offset);
-                    }
+                    warp_reduce(p0_m);
                     if (lane == 0) {
                         atomicAdd(&s_P_sum[m], p0_m);
                     }
