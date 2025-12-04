@@ -35,12 +35,6 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
     if (pid < N_PATHS) {
         curandState local = states[pid];
 
-        float p0_warp = 2.0f * 32;
-        
-        if (lane == 0) {
-            atomicAdd(&s_P_sum[0], p0_warp);
-        }
-
         float r1 = d_r0, r2 = d_r0;
         float integral1 = 0.0f, integral2 = 0.0f;
         const float exp_adt = d_exp_adt;      
@@ -77,6 +71,10 @@ __global__ void simulate_zcb(float* P_sum, curandState* states) {
     __syncthreads();
     if (threadIdx.x < N_MAT) {
         atomicAdd(&P_sum[threadIdx.x], s_P_sum[threadIdx.x]);
+    }
+    __syncthreads();
+    if (pid == 0) {
+       P_sum[0] = 2.0f * N_PATHS;
     }
 }
 
