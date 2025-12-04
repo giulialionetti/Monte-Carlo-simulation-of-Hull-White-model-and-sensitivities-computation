@@ -343,93 +343,78 @@ void benchmark_block_sizes(const float* d_P_market, const float* d_f_market,
            100.0f * (times[0] - best_time) / best_time);
 }
 
+// Compute drift table adjusted for volatility shift
+void compute_shifted_drift_table(float* h_drift_out, float sigma_new, float sigma_old) {
+    float shift_coeff = (sigma_new * sigma_new - sigma_old * sigma_old) / (2.0f * H_A);
+    float h_exp_adt = expf(-H_A * H_DT);
+    float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / H_A;
+    float h_one_minus_exp_adt_over_a_sq = h_one_minus_exp_adt_over_a / H_A;
+
+    for (int i = 0; i < N_STEPS; i++) {
+        float s = i * H_DT;
+        float t = (i + 1) * H_DT;
+
+        float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
+        float base_drift = (s < 5.0f) ? 
+            (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
+            (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
+        
+        // Analytical integral of K*e^-{at}*e^{au}(e^{-au} - e^{-2au}) from s to t
+        float adjustment = (shift_coeff / H_A) * (
+            1.0f + expf(-2.0f * H_A * t) 
+            - expf(-H_A * (t - s)) 
+            - expf(-H_A * (t + s))
+        );
+
+        h_drift_out[i] = base_drift + adjustment;
+    }
+}
+
 void run_finite_difference(const float* d_P_market, const float* d_f_market, 
                            curandState* d_states, float* h_result_fd) {
-    printf("\n");
-    printf("FINITE DIFFERENCE APPROXIMATION\n");
-    printf("\n\n");
+    printf("\nFINITE DIFFERENCE APPROXIMATION\n\n");
     
-    float S1 = 5.0f;
-    float S2 = 10.0f;
-    float K = expf(-0.1f);
-    float epsilon = 0.001f;
-    float original_sigma = H_SIGMA;
+    float S1 = 5.0f, S2 = 10.0f, K = expf(-0.1f);
+    float epsilon = 0.001f, original_sigma = H_SIGMA;
     
-    printf("Method: Three-point centered difference with Common Random Numbers\n");
-    printf("  ε = %.6f (perturbation size)\n", epsilon);
-    printf("  Using SAME random sequence as pathwise method (CRN)\n\n");
-    
-    // Save initial RNG state for CRN
     curandState* d_states_backup;
     cudaMalloc(&d_states_backup, N_PATHS * sizeof(curandState));
-    cudaMemcpy(d_states_backup, d_states, N_PATHS * sizeof(curandState), 
-               cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_states_backup, d_states, N_PATHS * sizeof(curandState), cudaMemcpyDeviceToDevice);
     
-    // Price at σ - ε
-    float sigma_minus = original_sigma - epsilon;
-    float h_sig_st_minus = sigma_minus * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
-    cudaMemcpyToSymbol(d_sigma, &sigma_minus, sizeof(float));
-    cudaMemcpyToSymbol(d_sig_st, &h_sig_st_minus, sizeof(float));
-    compute_drift_tables(sigma_minus);
+    float h_drift_temp[N_STEPS];
+
+    // Price at sigma - eps
+    float sig_m = original_sigma - epsilon;
+    float sig_st_m = sig_m * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+    cudaMemcpyToSymbol(d_sigma, &sig_m, sizeof(float));
+    cudaMemcpyToSymbol(d_sig_st, &sig_st_m, sizeof(float));
     
-    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
-               cudaMemcpyDeviceToDevice);
-    float price_minus = run_zbc_price(S1, S2, K, d_P_market, d_f_market, d_states);
+    compute_shifted_drift_table(h_drift_temp, sig_m, original_sigma);
+    cudaMemcpyToSymbol(d_drift_table, h_drift_temp, N_STEPS * sizeof(float));
     
-    // Price at σ (base)
-    float h_sig_st_base = original_sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), cudaMemcpyDeviceToDevice);
+    float p_minus = run_zbc_price(S1, S2, K, d_P_market, d_f_market, d_states);
+    
+    // Price at sigma + eps
+    float sig_p = original_sigma + epsilon;
+    float sig_st_p = sig_p * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+    cudaMemcpyToSymbol(d_sigma, &sig_p, sizeof(float));
+    cudaMemcpyToSymbol(d_sig_st, &sig_st_p, sizeof(float));
+    
+    compute_shifted_drift_table(h_drift_temp, sig_p, original_sigma);
+    cudaMemcpyToSymbol(d_drift_table, h_drift_temp, N_STEPS * sizeof(float));
+    
+    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), cudaMemcpyDeviceToDevice);
+    float p_plus = run_zbc_price(S1, S2, K, d_P_market, d_f_market, d_states);
+    
+    // Restore original sigma and drift table
+    float sig_st_base = original_sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
     cudaMemcpyToSymbol(d_sigma, &original_sigma, sizeof(float));
-    cudaMemcpyToSymbol(d_sig_st, &h_sig_st_base, sizeof(float));
+    cudaMemcpyToSymbol(d_sig_st, &sig_st_base, sizeof(float));
     compute_drift_tables(original_sigma);
     
-    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
-               cudaMemcpyDeviceToDevice);
-    float price_base = run_zbc_price(S1, S2, K, d_P_market, d_f_market, d_states);
-    
-    // Price at σ + ε
-    float sigma_plus = original_sigma + epsilon;
-    float h_sig_st_plus = sigma_plus * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
-    cudaMemcpyToSymbol(d_sigma, &sigma_plus, sizeof(float));
-    cudaMemcpyToSymbol(d_sig_st, &h_sig_st_plus, sizeof(float));
-    compute_drift_tables(sigma_plus);
-    
-    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), 
-               cudaMemcpyDeviceToDevice);
-    float price_plus = run_zbc_price(S1, S2, K, d_P_market, d_f_market, d_states);
-    
-    // Compute derivatives
-    float vega_centered = (price_plus - price_minus) / (2.0f * epsilon);
-    float vega_onesided = (price_plus - price_base) / epsilon;
-    float volga = (price_plus - 2.0f * price_base + price_minus) / (epsilon * epsilon);
-    
-    *h_result_fd = vega_centered;
-    
-    printf("--- Option Prices at Different Volatilities ---\n");
-    printf("  ZBC(σ - ε = %.4f) = %.8f\n", sigma_minus, price_minus);
-    printf("  ZBC(σ     = %.4f) = %.8f\n", original_sigma, price_base);
-    printf("  ZBC(σ + ε = %.4f) = %.8f\n\n", sigma_plus, price_plus);
-    
-    printf("--- Vega Estimates (First Derivative ∂ZBC/∂σ) ---\n");
-    printf("  One-sided FD:     %.6f\n", vega_onesided);
-    printf("  Centered FD:      %.6f  ← Primary estimate\n\n", vega_centered);
-    
-    printf("--- Volga Analysis (Second Derivative ∂²ZBC/∂σ²) ---\n");
-    printf("  Volga (vomma):    %.6f\n", volga);
-    
-    if (fabsf(volga) < 0.01f) {
-        printf("  Interpretation:   Near-linear (|volga| ≈ 0)\n");
-    } else if (volga > 0) {
-        printf("  Interpretation:   Convex curve (volga > 0)\n");
-        printf("  Implication:      FD (secant) > Pathwise (tangent)\n");
-    } else {
-        printf("  Interpretation:   Concave curve (volga < 0)\n");
-        printf("  Implication:      FD (secant) < Pathwise (tangent)\n");
-    }
-    
-    // Restore original constants
-    cudaMemcpyToSymbol(d_sigma, &original_sigma, sizeof(float));
-    cudaMemcpyToSymbol(d_sig_st, &h_sig_st_base, sizeof(float));
-    
+    *h_result_fd = (p_plus - p_minus) / (2.0f * epsilon);
+    printf("  ZBC( sigma - eps) = %.8f\n  ZBC(sigma + eps) = %.8f\n  FD Vega  = %.6f\n", p_minus, p_plus, *h_result_fd);
     cudaFree(d_states_backup);
 }
 
