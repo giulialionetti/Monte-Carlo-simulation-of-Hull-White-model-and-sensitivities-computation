@@ -557,9 +557,9 @@ int main() {
     float abs_diff = fabsf(sens_mc - sens_fd);
     float rel_diff_pct = 100.0f * abs_diff / fabsf(sens_fd);
     
-    printf("\n")
+    printf("\n");
     printf("note: we're using FD with no recalibration in the final comparison\n");
-    printf("\n")
+    printf("\n");
     
     printf("--- Vega Estimates ---\n");
     printf("  Pathwise Derivative (MC):   %.6f\n", sens_mc);
