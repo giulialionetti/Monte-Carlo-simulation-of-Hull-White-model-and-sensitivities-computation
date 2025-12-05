@@ -1,7 +1,6 @@
 # Monte Carlo simulation of Hull-White model and sensitivities computation
 
-The goal of this project is to implement Monte Carlo simulation for pricing and sensitivity analysis
-of fixed income instruments under the Hull-White one-factor short-rate model using CUDA.
+The goal of this project is to implement Monte Carlo simulation for pricing and sensitivity analysis of fixed income instruments under the Hull-White one-factor short-rate model using CUDA.
 
 ## Results
 
@@ -13,9 +12,9 @@ Simulation Time:       6.18 ms
 Throughput:            339 M paths/sec
 
 Validation:
-  P(0,0)  = 1.000000 ✓
+  P(0,0)  = 1.000000 
   P(0,10) = 0.876813
-  f(0,0)  = 1.21%
+  f(0,0)  = 1.20%
 ```
 
 ### Q2a: Theta Calibration
@@ -56,31 +55,36 @@ Conclusion: Recalibration degrades accuracy due to accumulated
 ## Mathematical Model
 
 ### Hull-White SDE
-```
-dr(t) = [θ(t) - a·r(t)]dt + σ·dW(t)
-```
 
-Parameters: r₀=0.012, a=1.0, σ=0.1
+$$dr(t) = [\theta(t) - ar(t)]dt + \sigma dW_t$$
+
+**Parameters:** $r_0 = 0.012$, $a = 1.0$, $\sigma = 0.1$
 
 ### Exact Discretization
-```
-r(t+Δt) = r(t)·e^(-a·Δt) + drift + σ·√[(1-e^(-2a·Δt))/(2a)]·G
-```
+
+$$r(t+\Delta t) = r(t)e^{-a\Delta t} + \text{drift} + \sigma\sqrt{\frac{1-e^{-2a\Delta t}}{2a}}\,G$$
+
+where $G \sim \mathcal{N}(0,1)$
 
 ### Analytical Bond Formula
-```
-P(t,T) = A(t,T)·exp(-B(t,T)·r(t))
-```
+
+$$P(t,T) = A(t,T)\exp(-B(t,T)r(t))$$
+
+where:
+
+$$B(t,T) = \frac{1 - e^{-a(T-t)}}{a}$$
+
+$$A(t,T) = \frac{P(0,T)}{P(0,t)} \exp\left[B(t,T)f(0,t) - \frac{\sigma^2(1-e^{-2at})}{4a}B(t,T)^2\right]$$
 
 ## Implementation
 
 ### Variance Reduction
-- **Antithetic Variates**: Simulate with ±G per path
-- **Control Variates**: Use E[discount·P] = P(0,S₂)
+- **Antithetic Variates**: Simulate with $\pm G$ per path
+- **Control Variates**: Use $\mathbb{E}[\text{discount} \cdot P] = P(0,S_2)$
 - **Common Random Numbers**: Shared RNG states for finite differences
 
 ### GPU Optimizations
-- **Warp Shuffle Reductions**: O(log N) complexity
+- **Warp Shuffle Reductions**: $O(\log N)$ complexity
 - **Constant Memory**: Precomputed drift tables
 - **Fast Math**: `__expf()`, `__fmaf_rn()` intrinsics
 - **100% Occupancy**: 1024 threads/block, no register spilling (32 regs/thread)
@@ -145,7 +149,7 @@ Q3: Sensitivity         1.74         602
 1. **Antithetic variates**: Effective for variance reduction with minimal overhead
 2. **Control variates**: Deviation of 0.00002 validates simulation quality
 3. **Pathwise vs FD agreement**: 0.17% difference demonstrates numerical consistency
-4. **Recalibration counterproductive**: Adding MC noise to P(0,T) curves increases error from 0.17% to 127%
+4. **Recalibration counterproductive**: Adding MC noise to $P(0,T)$ curves increases error from 0.17% to 127%
 5. **Warp shuffles**: Efficient reduction pattern for GPU kernels
 
 ---
