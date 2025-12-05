@@ -1,5 +1,6 @@
 #include "common.cuh"
 #include "output.cuh"
+#include "market_data.cuh"
 
 /*
  * Hull-White Model: Sensitivity Analysis:
@@ -7,9 +8,7 @@
  * 2. Compare with Finite Difference approximation
  */
 
-/**
- * Analytical derivative of Bond Price P(S1, S2) with respect to sigma: partial_sigma P(S1, S2)
- */
+// Analytical derivative of Bond Price P(S1, S2) with respect to sigma: partial_sigma P(S1, S2)
 __device__ float compute_dP_dsigma(float S1, float S2, float P_S1_S2, float d_sigma_r_S1, float a, float sigma) {
     float B = (1.0f - expf(-a * (S2 - S1))) / a;
     float one_minus_exp = 1.0f - expf(-2.0f * a * S2);
@@ -231,13 +230,13 @@ void run_sensitivity_mc(const float* d_P_market, const float* d_f_market,
     *h_result_sens = sum / N_PATHS;
     
     printf("Performance Results\n");
-    printf("  Vega (∂ZBC/∂σ):   %.6f\n", *h_result_sens);
-    printf("  Computation:      %.2f ms\n", ms);
-    printf("  Throughput:       %.2f M paths/sec\n", (N_PATHS / ms) / 1000.0f);
+    printf("Vega:   %.6f\n", *h_result_sens);
+    printf("Computation:      %.2f ms\n", ms);
+    printf("Throughput:       %.2f M paths/sec\n", (N_PATHS / ms) / 1000.0f);
     
     // Estimate achieved vs peak performance
     float peakOccupancy = theoreticalOccupancy / 100.0f;
-    printf("  Efficiency:       %.1f%% of theoretical peak\n", peakOccupancy * 100.0f);
+    printf("Efficiency:       %.1f%% of theoretical peak\n", peakOccupancy * 100.0f);
     
     cudaFree(d_sens_sum);
     cudaEventDestroy(start);
@@ -321,19 +320,16 @@ void benchmark_block_sizes(const float* d_P_market, const float* d_f_market,
         float relative = 100.0f * (best_time / times[i]);
         printf("  %4d threads/block: %5.1f%%", block_sizes[i], relative);
         if (block_sizes[i] == best_size) {
-            printf(" ← OPTIMAL");
+            printf("OPTIMAL");
         }
         if (relative < 90.0f) {
-            printf(" (too small, high overhead)");
+            printf("too small, high overhead");
         }
         printf("\n");
     }
     
     if (best_size == 1024) {
-        printf(" Current configuration (1024) is already optimal.\n");
-        printf("  - Maximizes warp-level parallelism (32 warps/block)\n");
-        printf("  - Minimizes block launch overhead\n");
-        printf("  - Achieves 100%% occupancy on V100\n");
+        printf(" Current configuration is already optimal.\n");
     } else {
         printf("Recommendation: Switch to %d threads/block for %.1f%% improvement\n", 
                best_size, 100.0f * (times[3] - best_time) / times[3]);
@@ -418,6 +414,85 @@ void run_finite_difference(const float* d_P_market, const float* d_f_market,
     cudaFree(d_states_backup);
 }
 
+// recompute market data P and f for a new sigma
+void recompute_market_data(float sigma, curandState* d_states_backup,
+                           float** d_P_out, float** d_f_out) {
+    
+    float h_sig_st = sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+    cudaMemcpyToSymbol(d_sigma, &sigma, sizeof(float));
+    cudaMemcpyToSymbol(d_sig_st, &h_sig_st, sizeof(float));
+    compute_drift_tables(sigma);
+    
+    
+    float *d_P_sum;
+    cudaMalloc(d_P_out, N_MAT * sizeof(float));
+    cudaMalloc(d_f_out, N_MAT * sizeof(float));
+    cudaMalloc(&d_P_sum, N_MAT * sizeof(float));
+    cudaMemset(d_P_sum, 0, N_MAT * sizeof(float));
+    
+    
+    curandState* d_states_temp;
+    cudaMalloc(&d_states_temp, N_PATHS * sizeof(curandState));
+    cudaMemcpy(d_states_temp, d_states_backup, N_PATHS * sizeof(curandState), 
+               cudaMemcpyDeviceToDevice);
+    
+    
+    simulate_zcb<<<NB, NTPB>>>(d_P_sum, d_states_temp);
+    cudaDeviceSynchronize();
+    
+    compute_average_and_forward<<<1, 128>>>(
+        *d_P_out, *d_f_out, d_P_sum, 
+        N_MAT, 2 * N_PATHS, 1.0f / H_MAT_SPACING
+    );
+    cudaDeviceSynchronize();
+    
+    cudaFree(d_P_sum);
+    cudaFree(d_states_temp);
+}
+
+void run_finite_difference_recalibrated(curandState* d_states, float* h_result_fd) {
+
+    printf("\n Running finite differences with market data recalibration for theoretical accuracy.\n\n");
+    printf("\n we expect this to bring no additional benefit given that recalibration adds computational cost.\n\n");
+    
+
+    float S1 = 5.0f, S2 = 10.0f, K = expf(-0.1f);
+    float epsilon = 0.001f;
+    float original_sigma = H_SIGMA;
+   
+    curandState* d_states_backup;
+    cudaMalloc(&d_states_backup, N_PATHS * sizeof(curandState));
+    cudaMemcpy(d_states_backup, d_states, N_PATHS * sizeof(curandState), 
+               cudaMemcpyDeviceToDevice);
+    
+    printf("Computing at sigma - epsilon = %.4f...\n", original_sigma - epsilon);
+    float *d_P_minus, *d_f_minus;
+    recompute_market_data(original_sigma - epsilon, d_states_backup, &d_P_minus, &d_f_minus);
+    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), cudaMemcpyDeviceToDevice);
+    float price_minus = run_zbc_price(S1, S2, K, d_P_minus, d_f_minus, d_states);
+    printf("  Price = %.8f\n", price_minus);
+    
+    printf("Computing at sigma + epsilon = %.4f...\n", original_sigma + epsilon);
+    float *d_P_plus, *d_f_plus;
+    recompute_market_data(original_sigma + epsilon, d_states_backup, &d_P_plus, &d_f_plus);
+    cudaMemcpy(d_states, d_states_backup, N_PATHS * sizeof(curandState), cudaMemcpyDeviceToDevice);
+    float price_plus = run_zbc_price(S1, S2, K, d_P_plus, d_f_plus, d_states);
+    printf("Price = %.8f\n\n", price_plus);
+    
+    *h_result_fd = (price_plus - price_minus) / (2.0f * epsilon);
+    printf("recalibrated Vega: %.6f\n", *h_result_fd);
+    
+    // Restore original market data
+    float h_sig_st = original_sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+    cudaMemcpyToSymbol(d_sigma, &original_sigma, sizeof(float));
+    cudaMemcpyToSymbol(d_sig_st, &h_sig_st, sizeof(float));
+    compute_drift_tables(original_sigma);
+    
+    cudaFree(d_P_minus); cudaFree(d_f_minus);
+    cudaFree(d_P_plus); cudaFree(d_f_plus);
+    cudaFree(d_states_backup);
+}
+
 
 int main() {
     select_gpu();
@@ -432,21 +507,20 @@ int main() {
     load_market_data_to_device(h_P, h_f, &d_P_market, &d_f_market);
     check_cuda("cudaMemcpy market data");
 
-    // Setup RNG
+    
     curandState *d_states;
     cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     check_cuda("init_rng");
 
-    // Initialize Standard Constants
+   
     compute_constants();
 
-    // Run MC Sensitivity
+   
     float sens_mc;
     run_sensitivity_mc(d_P_market, d_f_market, d_states, &sens_mc);
 
 
-    // Block size benchmark
     printf("\n");
     char response;
     printf("Run block size optimization sweep? (y/n): ");
@@ -455,17 +529,37 @@ int main() {
         benchmark_block_sizes(d_P_market, d_f_market, d_states, 5.0f, 10.0f, expf(-0.1f));
     }
 
-    // Run FD Sensitivity
+    // Run FD Sensitivity & FD with Recalibration to compare
     float sens_fd;
     run_finite_difference(d_P_market, d_f_market, d_states, &sens_fd);
+ 
+    float sens_fd_new;
+    run_finite_difference_recalibrated(d_states, &sens_fd_new);
 
-    // Final Comparison
+
+    printf("Pathwise:        %.6f\n", sens_mc);
+    printf("FD (no recalibration):        %.6f  (%.2f%% diff)\n", 
+           sens_fd, 100.0f * fabs(sens_mc - sens_fd) / fabs(sens_mc));
+    printf("FD (recalibrated):    %.6f  (%.2f%% diff)\n", 
+           sens_fd_new, 100.0f * fabs(sens_mc - sens_fd_new) / fabs(sens_mc));
+
+    if (fabs(sens_mc - sens_fd_new) > fabs(sens_mc - sens_fd)) {
+        printf("\nRecalibration would make it worse/add no significant benefit.\n");
+    } else {
+        printf("\nRecalibration would help reduce model inconsistency.\n");
+    }
+
+   
     printf("\n");
     printf("COMPARATIVE ANALYSIS\n");
     printf("\n\n");
     
     float abs_diff = fabsf(sens_mc - sens_fd);
     float rel_diff_pct = 100.0f * abs_diff / fabsf(sens_fd);
+    
+    printf("\n")
+    printf("note: we're using FD with no recalibration in the final comparison\n");
+    printf("\n")
     
     printf("--- Vega Estimates ---\n");
     printf("  Pathwise Derivative (MC):   %.6f\n", sens_mc);
@@ -475,37 +569,35 @@ int main() {
     printf("  Absolute Difference:        %.6f\n", abs_diff);
     printf("  Relative Difference:        %.2f%%\n\n", rel_diff_pct);
     
-    // Validation
+
     printf("--- Validation ---\n");
     bool sign_correct = (sens_mc > 0 && sens_fd > 0);
     printf("  Sign Check:                 %s\n", 
-           sign_correct ? "PASS (both positive, as expected for calls)" : "FAIL");
+           sign_correct ? "PASS" : "FAIL");
     
     bool magnitude_reasonable = (sens_mc > 0.05f && sens_mc < 0.5f && 
                                  sens_fd > 0.05f && sens_fd < 0.5f);
     printf("  Magnitude Check:            %s\n", 
-           magnitude_reasonable ? "PASS (within reasonable bounds)" : "FAIL");
+           magnitude_reasonable ? "PASS" : "FAIL");
     
     if (rel_diff_pct < 10.0f) {
-        printf("  Agreement Level: EXCELLENT (< 10%% difference)\n");
+        printf("Agreement Level: < 10%% difference\n");
     } else if (rel_diff_pct < 25.0f) {
-        printf("  Agreement Level: GOOD (< 25%% difference)\n");
+        printf("Agreement Level: < 25%% difference\n");
     } else if (rel_diff_pct < 50.0f) {
-        printf("  Agreement Level: ACCEPTABLE (< 50%% difference)\n");
+        printf("Agreement Level: < 50%% difference\n");
     } else {
-        printf("  Agreement Level: POOR (> 50%% difference)\n");
+        printf("Agreement Level: > 50%% difference\n");
     }
     
     printf("\n");
-    printf("Explanation of Discrepancy\n");
     printf("The %.2f%% difference arises from:\n", rel_diff_pct);
-    printf("  1. Convexity (volga > 0): FD secant line vs pathwise tangent\n");
-    printf("  2. Market data consistency: P(0,T) calibrated at σ=%.4f\n", H_SIGMA);
+    printf("  1. Market data consistency: P(0,T) calibrated at σ=%.4f\n", H_SIGMA);
+    printf("  2. Convexity (volga > 0): FD secant line vs pathwise tangent\n");
     printf("  3. Monte Carlo noise: ~0.1%% with %d paths and CRN\n", N_PATHS);
     printf("\nBoth methods validate each other and confirm correct implementation.\n");
 
 
-    // Save Results
     FILE* json = json_open("data/q3_results.json", "Q3: Sensitivity Analysis");
     if (json) {
         fprintf(json, "  \"results\": {\n");
