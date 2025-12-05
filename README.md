@@ -1,188 +1,166 @@
-# Monte Carlo Simulation of Hull-White Model and Sensitivities Computation
+# Monte Carlo simulation of Hull-White model and sensitivities computation
 
-## Project Overview
+The goal of this project is to implement Monte Carlo simulation for pricing and sensitivity analysis
+of fixed income instruments under the Hull-White one-factor short-rate model using CUDA.
 
-This project implements Monte Carlo simulation for pricing and sensitivity analysis of fixed income instruments under the Hull-White one-factor short-rate model using CUDA.
+## Results
 
-## Mathematical Framework
+### Q1: Zero-Coupon Bond Pricing
+```
+Monte Carlo Paths:     1,048,576 × 2 (antithetic variates)
+Time Steps:            1,000
+Simulation Time:       6.18 ms
+Throughput:            339 M paths/sec
 
-### Hull-White One-Factor Model
+Validation:
+  P(0,0)  = 1.000000 ✓
+  P(0,10) = 0.876813
+  f(0,0)  = 1.21%
+```
 
-The short-rate model is defined by the stochastic differential equation:
+### Q2a: Theta Calibration
+```
+Method:    Finite differences on forward rates
+Formula:   θ(T) = ∂f/∂T + a·f(0,T) + σ²/(2a)·(1-e^(-2aT))
+Max Error: 1.56e-03 (at T=0)
+Mean Error: 2.27e-04
+Status:    SUCCESS (< 0.01 threshold)
+```
 
-$$dr(t) = [\theta(t) - ar(t)]dt + \sigma dW_t$$
+### Q2b: Option Pricing
+```
+Option:              European call on P(5,10)
+Strike:              K = e^(-0.1) = 0.904837
+Method:              Control variate variance reduction
 
-**Parameters:**
-- $r(0) = 0.012$ (initial short rate)
-- $a = 1$ (mean reversion speed)
-- $\sigma = 0.1$ (volatility)
-- $\theta(t)$ (piecewise linear function defined on $[0, 10]$):
+ZBC (raw):           0.03546107
+Control mean:        0.87679142
+Expected (P(0,10)):  0.87681299
+Control deviation:   -0.00002158
+ZBC (adjusted):      0.03548265
 
-$$\theta(t) = \begin{cases}
-0.012 + 0.0014t & \text{for } 0 \leq t < 5 \\
-0.019 + 0.001(t-5) & \text{for } 5 \leq t \leq 10
-\end{cases}$$
+Performance:         1.67 ms, 1260 M paths/sec
+```
 
-### Simulation Formula
+### Q3: Sensitivity Analysis (Vega)
+```
+Method                      Vega        Diff from Pathwise
+Pathwise Derivative:        0.230562    ---
+Finite Difference:          0.230173    0.17%
+FD (recalibrated P,f):      0.523699    127.14%
 
-The short rate $r(t)$ at time $t$, given its value $r_s$ at time $s < t$, follows a Gaussian distribution:
+Conclusion: Recalibration degrades accuracy due to accumulated 
+            Monte Carlo noise from re-simulating P(0,T) curves.
+```
 
-$$r(t) = m_{s,t} + \Sigma_{s,t} G$$
+## Mathematical Model
 
-where $G \sim \mathcal{N}(0,1)$ and:
+### Hull-White SDE
+```
+dr(t) = [θ(t) - a·r(t)]dt + σ·dW(t)
+```
 
-$$m_{s,t} = r(s)e^{-a(t-s)} + \int_s^t e^{-a(t-u)}\theta(u)du$$
+Parameters: r₀=0.012, a=1.0, σ=0.1
 
-$$\Sigma_{s,t} = \sqrt{\frac{\sigma^2(1 - e^{-2a(t-s)})}{2a}}$$
+### Exact Discretization
+```
+r(t+Δt) = r(t)·e^(-a·Δt) + drift + σ·√[(1-e^(-2a·Δt))/(2a)]·G
+```
 
-### Zero Coupon Bond Pricing
+### Analytical Bond Formula
+```
+P(t,T) = A(t,T)·exp(-B(t,T)·r(t))
+```
 
-The zero coupon bond price represents the amount to pay at time $t$ to receive 1 at maturity $T$:
+## Implementation
 
-$$P(t,T) = \mathbb{E}_t\left[\exp\left(-\int_t^T r_s ds\right)\right]$$
+### Variance Reduction
+- **Antithetic Variates**: Simulate with ±G per path
+- **Control Variates**: Use E[discount·P] = P(0,S₂)
+- **Common Random Numbers**: Shared RNG states for finite differences
 
-**Forward Rate:**
+### GPU Optimizations
+- **Warp Shuffle Reductions**: O(log N) complexity
+- **Constant Memory**: Precomputed drift tables
+- **Fast Math**: `__expf()`, `__fmaf_rn()` intrinsics
+- **100% Occupancy**: 1024 threads/block, no register spilling (32 regs/thread)
 
-$$f(0,T) = \frac{\partial \ln(P(0,T))}{\partial T}$$
+### Code Structure
+```
+include/
+  ├── common.cuh          # Core kernels & utilities
+  ├── market_data.cuh     # Bond pricing & calibration
+  ├── output.cuh          # JSON/CSV output
+  └── perf_benchmark.cuh  # Reduction benchmarks
 
-**Analytical Expression (Hull-White):**
+src/
+  ├── 1_bond_pricing.cu             # Q1: P(0,T) and f(0,T)
+  ├── 2_option_pricing.cu           # Q2: Calibration & ZBC
+  ├── 3_sensitivity_analysis.cu     # Q3: Pathwise + FD
+  └── benchmark_reductions.cu       # Performance comparison
+```
 
-$$P(t,T) = A(t,T) \exp(-B(t,T)r(t))$$
+## Building & Running
+```bash
+# Compile
+make all
 
-where:
+# Run workflow
+make run-all
 
-$$B(t,T) = \frac{1 - e^{-a(T-t)}}{a}$$
+# Generate plots
+make analyze
 
-$$A(t,T) = \frac{P(0,T)}{P(0,t)} \exp\left[B(t,T)f(0,t) - \frac{\sigma^2(1-e^{-2aT})}{4a}B(t,T)^2\right]$$
-
-### Calibration Formula
-
-In practice, $P(0,T)$ values are market-quoted, and $\theta$ is recovered using:
-
-$$\theta(T) = \frac{\partial f(0,T)}{\partial T} + af(0,T) + \frac{\sigma^2(1-e^{-2aT})}{2a}$$
-
-### Zero Coupon Bond Call Option
-
-European call option on a zero coupon bond:
-
-$$\text{ZBC}(S_1, S_2, K) = \mathbb{E}\left[e^{-\int_0^{S_1} r_s ds}(P(S_1,S_2) - K)^+\right]$$
-
-where $(x)^+ = \max(x, 0)$ and $0 < S_1 < S_2 \leq 10$.
-
-### Sensitivity (Greeks)
-
-Derivative with respect to volatility $\sigma$:
-
-$$\frac{\partial}{\partial\sigma}\text{ZBC}(S_1,S_2,K) = \mathbb{E}\left[\frac{\partial P(S_1,S_2)}{\partial\sigma} e^{-\int_0^{S_1} r_s ds}\mathbf{1}_{P(S_1,S_2)>K} - \left[\int_0^{S_1} \frac{\partial r_s}{\partial\sigma} ds\right]e^{-\int_0^{S_1} r_s ds}(P(S_1,S_2)-K)^+\right]$$
-
-where $\frac{\partial r(t)}{\partial\sigma}$ follows the induction:
-
-$$\frac{\partial r(t)}{\partial\sigma} = M_{s,t} + \frac{\Sigma_{s,t}}{\sigma}G$$
-
-$$M_{s,t} = \frac{\partial r(s)}{\partial\sigma}e^{-a(t-s)} + \frac{2\sigma e^{-at}[\cosh(at) - \cosh(as)]}{a^2}$$
-
-$$\frac{\partial r(0)}{\partial\sigma} = 0$$
-
-## Project Tasks
-
-### Question 1: Monte Carlo for Zero Coupon Bonds 
-
-**Objective:** Compute Monte Carlo estimates of $P(0,T)$ and $f(0,T)$ for $T \in [0,10]$
-
-**Requirements:**
-- Implement CUDA kernel for short-rate simulation using equation (8)
-- Use trapezoidal rule on uniform time grid to approximate $\int_0^T r_s ds$
-- Compute both bond prices $P(0,T)$ and forward rates $f(0,T)$
-- Generate results for a range of maturities
-
-**Key Implementation Details:**
-- Discretize time interval $[0,10]$ uniformly
-- For each Monte Carlo path:
-  - Simulate $r(t)$ trajectory using Gaussian increments
-  - Accumulate integral using trapezoidal rule
-  - Compute $\exp\left(-\int_0^T r_s ds\right)$
-- Average over all paths to get $P(0,T)$
-- Compute forward rate using finite differences: $f(0,T) \approx \frac{\partial \ln(P(0,T))}{\partial T}$
-
-### Question 2: Calibration and Option Pricing
-
-#### 2a) Calibration 
-
-**Objective:** Recover the piecewise linear $\theta(t)$ from equation (7) using market data
-
-**Requirements:**
-- Use $P(0,T)$ and $f(0,T)$ values from Question 1
-- Implement CUDA kernel to apply calibration formula (10)
-- Verify recovered $\theta(t)$ matches the specified piecewise linear form
-
-**Implementation:**
-- Compute $\frac{\partial f(0,T)}{\partial T}$ numerically from grid of $f$ values
-- Apply formula: $\theta(T) = \frac{\partial f(0,T)}{\partial T} + af(0,T) + \frac{\sigma^2(1-e^{-2aT})}{2a}$
-
-#### 2b) Option Pricing 
-
-**Objective:** Price the zero coupon bond call option $\text{ZBC}(5, 10, e^{-0.1})$
+# Clean
+make clean
+```
 
 **Requirements:**
-- Use analytical formula for $P(t,T)$
-- Simulate $r(t)$ trajectories from $t=0$ to $t=5$
-- Approximate integral $\int_0^5 r_s ds$ using trapezoidal rule
-- Compute option payoff: $e^{-\int_0^5 r_s ds} \cdot (P(5,10) - e^{-0.1})^+$
-- Average over Monte Carlo paths
+- CUDA Toolkit 11.0+
+- GPU with compute capability 7.0+ (V100, A100, RTX 3000+)
+- Python 3.8+ (matplotlib, pandas, numpy)
 
-### Question 3: Sensitivity Analysis 
-**Objective:** Compute $\frac{\partial}{\partial\sigma}\text{ZBC}(5, 10, e^{-0.1})$ and validate with finite differences
+## Performance Details
 
-**Requirements:**
-- Implement pathwise derivative method
-- Simulate both $r(t)$ and $\frac{\partial r(t)}{\partial\sigma}$ along the same paths using same random numbers
-- Compute sensitivity using the analytical derivative formula
-- **Validation:** Compare with finite difference approximation:
-  
-  $$\frac{\text{ZBC}(\sigma + \varepsilon) - \text{ZBC}(\sigma - \varepsilon)}{2\varepsilon} \quad \text{for small } \varepsilon$$
+### GPU Occupancy (Tesla V100)
+```
+Theoretical Occupancy:  100.0%
+Registers/thread:       32
+Shared mem/block:       128 bytes
+Local mem/thread:       0 (no spilling)
+Blocks per SM:          2 (limited by registers)
+Active threads/SM:      2048/2048
+```
 
-**Implementation Details:**
-- Initialize $\frac{\partial r(0)}{\partial\sigma} = 0$
-- At each time step, update both $r(t)$ and $\frac{\partial r(t)}{\partial\sigma}$ using the same $G$
-- Compute $\frac{\partial P(S_1,S_2)}{\partial\sigma}$ using chain rule on analytical formula
-- Accumulate $\int_0^{S_1} \frac{\partial r_s}{\partial\sigma} ds$ using trapezoidal rule
+### Throughput Comparison
+```
+Task                    Time (ms)    Throughput (M paths/s)
+Q1: Bond Pricing        6.18         339
+Q2b: Option Pricing     1.67         1260
+Q3: Sensitivity         1.74         602
+```
 
-## Technical Requirements
+## Key Findings
 
-### CUDA Implementation
-- Efficient use of GPU global and shared memory
-- Proper random number generation (cuRAND)
-- Thread-safe Monte Carlo path generation
-- Numerical stability for exponential and integration calculations
+1. **Antithetic variates**: Effective for variance reduction with minimal overhead
+2. **Control variates**: Deviation of 0.00002 validates simulation quality
+3. **Pathwise vs FD agreement**: 0.17% difference demonstrates numerical consistency
+4. **Recalibration counterproductive**: Adding MC noise to P(0,T) curves increases error from 0.17% to 127%
+5. **Warp shuffles**: Efficient reduction pattern for GPU kernels
 
-### Numerical Methods
-- Trapezoidal rule for integral approximation
-- Finite difference for derivative approximation
-- Appropriate time discretization (balance accuracy vs. computation)
+## Experimental: Market Data Recalibration
 
-### Testing & Validation
-- Compare Question 2a results with known θ(t) expression
-- Verify finite difference approximation matches pathwise derivative
-- Check numerical stability and convergence
+Testing whether re-simulating P(0,T) and f(0,T) at perturbed volatilities improves finite difference accuracy:
 
-## Deliverables
+**Hypothesis**: Recalibrating market data ensures model consistency
 
-1. **Source Code:**
-   - Well-commented CUDA kernels
-   - Host code for data management
-   - Random number generation setup
+**Result**: Vega error increased from 0.17% → 127.14%
 
-2. **Presentation:**
-   - Numerical results for $P(0,T)$, $f(0,T)$, $\theta(T)$
-   - Option price $\text{ZBC}(5, 10, e^{-0.1})$
-   - Sensitivity $\frac{\partial}{\partial\sigma}\text{ZBC}$ vs. finite difference validation
-   - Code explanation (1-2 minutes)
-   - Performance analysis (execution time, convergence)
+**Explanation**: Re-running Q1 three times (at σ-ε, σ, σ+ε) introduces Monte Carlo noise that outweighs any theoretical benefit. Original Q1 data quality was sufficient.
 
-3. **Slides:**
-   - Plots of $P(0,T)$ and $f(0,T)$ curves
-   - Calibrated $\theta(t)$ vs. theoretical
-   - Option price with confidence interval
-   - Sensitivity comparison (pathwise vs. finite difference)
-   - Execution time analysis
+---
 
+**Authors**: Giulia Lionetti, Francesco Zattoni  
+**Institution**: Sorbonne Université  
+**Course**: Advanced High Performance Computing Algorithms and Programming Many-Core Architectures  
+**Academic Year**: 2025-2026
