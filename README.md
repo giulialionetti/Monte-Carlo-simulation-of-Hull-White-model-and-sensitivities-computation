@@ -148,16 +148,6 @@ Q3: Sensitivity         1.74         602
 4. **Recalibration counterproductive**: Adding MC noise to P(0,T) curves increases error from 0.17% to 127%
 5. **Warp shuffles**: Efficient reduction pattern for GPU kernels
 
-## Experimental: Market Data Recalibration
-
-Testing whether re-simulating P(0,T) and f(0,T) at perturbed volatilities improves finite difference accuracy:
-
-**Hypothesis**: Recalibrating market data ensures model consistency
-
-**Result**: Vega error increased from 0.17% → 127.14%
-
-**Explanation**: Re-running Q1 three times (at σ-ε, σ, σ+ε) introduces Monte Carlo noise that outweighs any theoretical benefit. Original Q1 data quality was sufficient.
-
 ---
 
 **Authors**: Giulia Lionetti, Francesco Zattoni  
