@@ -53,9 +53,8 @@ void print_theta_comparison(const float* theta_original,
     save_q2a_json("data/q2a_results.json", max_error, max_error < 0.01f);
 }
 
-void run_q2a(const float* h_P, const float* h_f, 
+void run_theta_recovery(const float* h_P, const float* h_f, 
              const float* d_P_market, const float* d_f_market) {
-    printf("\n=== Q2a: THETA RECOVERY ===\n\n");
     
     float h_theta_recovered[N_MAT], h_theta_original[N_MAT], h_T[N_MAT];
     float* d_theta_recovered, *d_theta_original, *d_T;
@@ -82,204 +81,10 @@ void run_q2a(const float* h_P, const float* h_f,
     cudaFree(d_T);
 }
 
-// Monte Carlo kernel for pricing European call option on zero-coupon bond.
-// Uses antithetic variates for variance reduction.
+// Monte Carlo kernel for pricing European call option on zero-coupon bond was moved to common.cuh.
 
-__global__ void simulate_ZBC(float* ZBC_sum, curandState* states, 
-                             float S1, float S2, float K,
-                             const float* d_P_market, const float* d_f_market) {
-    int pid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    __shared__ float s_ZBC_sum;
-    if (threadIdx.x == 0) {
-        s_ZBC_sum = 0.0f;
-    }
-    __syncthreads();
-
-    if (pid < N_PATHS) {
-        curandState local = states[pid];
-
-        float r1 = d_r0, r2 = d_r0;
-        float integral1 = 0.0f, integral2 = 0.0f;
-
-        int n_steps_S1 = (int)(S1 / d_dt);
-        const float exp_adt = d_exp_adt;      
-        const float sig_st = d_sig_st;        
-
-        for (int i = 1; i <= n_steps_S1; i++) {
-            float drift = d_drift_table[i - 1];
-            float G = curand_normal(&local);
-            const float sig_G = sig_st * G;
-
-            evolve_hull_white_step(
-                &r1, &integral1, drift, 
-                sig_G, exp_adt, d_dt
-            );
-            evolve_hull_white_step(
-                &r2, &integral2, drift, 
-                -sig_G, exp_adt, d_dt
-            );
-        }
-        
-        // Use shared device function from common.cuh
-        float P1 = compute_P_HW(S1, S2, r1, d_a, d_sigma, d_P_market, d_f_market);
-        float P2 = compute_P_HW(S1, S2, r2, d_a, d_sigma, d_P_market, d_f_market);
-        
-        float discount1 = expf(-integral1);
-        float discount2 = expf(-integral2);
-        
-        float payoff1 = discount1 * fmaxf(P1 - K, 0.0f);
-        float payoff2 = discount2 * fmaxf(P2 - K, 0.0f);
-        
-        atomicAdd(&s_ZBC_sum, payoff1 + payoff2);
-        
-        states[pid] = local;
-    }
-    
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        atomicAdd(ZBC_sum, s_ZBC_sum);
-    }
-}
-
-__global__ void simulate_ZBC_optimized(
-    float* ZBC_sum, 
-    curandState* states, 
-    float S1, float S2, float K,
-    const float* __restrict__ d_P_market,
-    const float* __restrict__ d_f_market
-) {
-    int pid = blockIdx.x * blockDim.x + threadIdx.x;
-    int lane = threadIdx.x & 31;
-    int warp_id = threadIdx.x >> 5;
-
-    __shared__ float warp_sums[WARPS_PER_BLOCK];
-
-    float thread_sum = 0.0f;
-
-    if (pid < N_PATHS) {
-        curandState local = states[pid];
-
-        float r1 = d_r0, r2 = d_r0;
-        float integral1 = 0.0f, integral2 = 0.0f;
-
-        const int n_steps = S1 / d_dt;
-        const float exp_adt = d_exp_adt;      
-        const float sig_st = d_sig_st;        
-        // Main simulation loop: evolve r(t) from 0 to S1
-        #pragma unroll 8
-        for (int i = 1; i <= n_steps; i++) {
-            const float drift = d_drift_table[i - 1];
-            const float G = curand_normal(&local);
-            const float sig_G = sig_st * G;   
-
-            evolve_hull_white_step(
-                &r1, &integral1, drift, 
-                sig_G, exp_adt, d_dt
-            );
-            evolve_hull_white_step(
-                &r2, &integral2, drift, 
-                -sig_G, exp_adt, d_dt
-            );
-        }
-        
-        // Compute P(S1, S2) using analytical Hull-White formula
-        const float a_val = d_a;
-        const float sigma_val = d_sigma;
-        
-        const float P1 = compute_P_HW(S1, S2, r1, a_val, sigma_val, d_P_market, d_f_market);
-        const float P2 = compute_P_HW(S1, S2, r2, a_val, sigma_val, d_P_market, d_f_market);
-        
-        // Compute discounted option payoffs
-        const float discount1 = __expf(-integral1);  
-        const float discount2 = __expf(-integral2);
-        
-        const float payoff1 = discount1 * fmaxf(P1 - K, 0.0f);
-        const float payoff2 = discount2 * fmaxf(P2 - K, 0.0f);
-        
-        thread_sum = payoff1 + payoff2;
-        
-        states[pid] = local;
-    }
-    
-    // Warp reduction
-    warp_reduce(thread_sum);
-    
-    if (lane == 0) {
-        warp_sums[warp_id] = thread_sum;
-    }
-    __syncthreads();
-    
-    // Block reduction and global atomic
-    if (warp_id == 0) {
-        float block_sum = block_reduce(warp_sums, lane, warp_id);
-        if (lane == 0) {
-            atomicAdd(ZBC_sum, block_sum);
-        }
-    }
-}
-
-void run_q2b(const float* d_P_market, const float* d_f_market) {
-    printf("\n\n=== Q2b: ZERO COUPON BOND CALL OPTION ===\n");
-    
-    float S1 = 5.0f;
-    float S2 = 10.0f;
-    float K = expf(-0.1f);
-    
-    printf("\nParameters:\n");
-    printf("  S1 (option maturity) = %.1f years\n", S1);
-    printf("  S2 (bond maturity) = %.1f years\n", S2);
-    printf("  K (strike) = %.6f\n", K);
-    printf("  N_PATHS = %d (x2 antithetic = %d effective)\n\n", N_PATHS, N_PATHS * 2);
-    
-    float *d_ZBC_sum;
-    float h_ZBC;
-    curandState *d_states;
-    
-    cudaMalloc(&d_ZBC_sum, sizeof(float));
-    cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
-    check_cuda("cudaMalloc Q2b");
-    
-    cudaMemset(d_ZBC_sum, 0, sizeof(float));
-    
-    printf("Initializing RNG...\n");
-    init_rng<<<NB, NTPB>>>(d_states, time(NULL) + 54321);
-    check_cuda("init_rng Q2b");
-    cudaDeviceSynchronize();
-    printf("RNG initialized\n");
-    
-    printf("Running Monte Carlo simulation...\n");
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    
-    cudaEventRecord(start);
-    simulate_ZBC_optimized<<<NB, NTPB>>>(d_ZBC_sum, d_states, S1, S2, K, d_P_market, d_f_market);
-    cudaEventRecord(stop);
-    check_cuda("simulate_ZBC");
-    cudaDeviceSynchronize();
-    
-    float sim_ms;
-    cudaEventElapsedTime(&sim_ms, start, stop);
-    printf("Simulation complete\n");
-    
-    cudaMemcpy(&h_ZBC, d_ZBC_sum, sizeof(float), cudaMemcpyDeviceToHost);
-    h_ZBC /= (2.0f * N_PATHS);
-    
-    printf("\n=== RESULTS ===\n");
-    printf("ZBC(5, 10, e^-0.1) = %.8f\n", h_ZBC);
-    
-    printf("\n=== Performance ===\n");
-    printf("Simulation time: %.2f ms\n", sim_ms);
-    printf("Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
-    
-    cudaFree(d_ZBC_sum);
-    cudaFree(d_states);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-}
-
-float run_q2b_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
+float run_ZBC_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
     printf("\n\n=== Q2b: ZBC WITH CONTROL VARIATE ===\n");
     
     float S1 = 5.0f;
@@ -364,12 +169,12 @@ int main() {
     check_cuda("cudaMemcpy market data");
     
     compute_constants();  
-    // Q2a: Theta recovery
-    run_q2a(h_P, h_f, d_P_market, d_f_market);
-    // Q2b: ZBC option pricing with control variate
-    float ZBC_adjusted = run_q2b_control_variate(d_P_market, d_f_market, h_P[N_MAT-1]);
+   
+    run_theta_recovery(h_P, h_f, d_P_market, d_f_market);
 
-    // Append to summary file
+    float ZBC_adjusted = run_ZBC_control_variate(d_P_market, d_f_market, h_P[N_MAT-1]);
+
+    
     summary_append("data/summary.txt", "Q2: THETA RECOVERY & OPTION PRICING");
     FILE* sum = fopen("data/summary.txt", "a");
     if (sum) {
