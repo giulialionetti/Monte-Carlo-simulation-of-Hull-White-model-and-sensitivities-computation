@@ -89,10 +89,15 @@ void compute_drift_tables(float sigma) {
     cudaMemcpyToSymbol(d_sigma_drift_table, h_sigma_drift, N_STEPS * sizeof(float));
 }
 
+// Compute sig_st for given sigma
+float compute_h_sig_st(float sigma) {
+    return sigma * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+}
+
 // Initialize constant memory with precomputed values
 void compute_constants() {
     float h_exp_adt = expf(-H_A * H_DT);
-    float h_sig_st = H_SIGMA * sqrtf((1.0f - expf(-2.0f * H_A * H_DT)) / (2.0f * H_A));
+    float h_sig_st = compute_h_sig_st(H_SIGMA);
     float h_one_minus_exp_adt_over_a = (1.0f - h_exp_adt) / H_A;
     float h_one_minus_exp_adt_over_a_sq = h_one_minus_exp_adt_over_a / H_A;
 
