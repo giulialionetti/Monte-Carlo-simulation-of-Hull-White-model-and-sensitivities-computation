@@ -85,7 +85,7 @@ void run_theta_recovery(const float* h_P, const float* h_f,
 
 
 float run_ZBC_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
-    printf("\n\n=== Q2b: ZBC WITH CONTROL VARIATE ===\n");
+   
     
     float S1 = 5.0f;
     float S2 = 10.0f;
