@@ -360,9 +360,7 @@ int main() {
     float ZBC_adjusted = run_ZBC_control_variate(d_P_market, d_f_market, h_P[N_MAT-1]);
 
     printf("\n");
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF);
-    printf("Run statistical validation for ZBC option (20 runs, ~30s)? (y/n): ");
+    printf("Run statistical validation for ZBC option (20 runs? (y/n): ");
     char response;
     scanf(" %c", &response);
     if (response == 'y' || response == 'Y') {
