@@ -558,23 +558,20 @@ void run_statistical_validation(const float* d_P_market, const float* d_f_market
     float cv_percent = 100.0f * std_dev / mean;
 
     printf("\n");
-    printf("╔════════════════════════════════════════════════════════════╗\n");
-    printf("║           STATISTICAL VALIDATION RESULTS                   ║\n");
-    printf("╠════════════════════════════════════════════════════════════╣\n");
-    printf("║ Sample Statistics (N = %d runs)                           ║\n", N_RUNS);
-    printf("╟────────────────────────────────────────────────────────────╢\n");
-    printf("║ Mean Vega:              %.6f                           ║\n", mean);
-    printf("║ Standard Deviation:     %.6f                           ║\n", std_dev);
-    printf("║ Standard Error:         %.6f                           ║\n", std_error);
-    printf("║ Coefficient of Var:     %.4f%%                          ║\n", cv_percent);
-    printf("╟────────────────────────────────────────────────────────────╢\n");
-    printf("║ 95%% Confidence Interval                                   ║\n");
-    printf("╟────────────────────────────────────────────────────────────╢\n");
-    printf("║ Lower Bound:            %.6f                           ║\n", ci_lower);
-    printf("║ Upper Bound:            %.6f                           ║\n", ci_upper);
-    printf("║ Margin of Error:        ±%.6f                          ║\n", margin_of_error);
-    printf("║ Relative Width:         ±%.4f%%                         ║\n", 100.0f * margin_of_error / mean);
-    printf("╚════════════════════════════════════════════════════════════╝\n");
+    printf("STATISTICAL VALIDATION RESULTS\n");
+    printf("\n");
+    printf("Sample Statistics (N = %d runs):\n", N_RUNS);
+    printf("  Mean Vega:              %.6f\n", mean);
+    printf("  Standard Deviation:     %.6f\n", std_dev);
+    printf("  Standard Error:         %.6f\n", std_error);
+    printf("  Coefficient of Var:     %.4f%%\n", cv_percent);
+    printf("\n");
+    printf("95%% Confidence Interval:\n");
+    printf("  Lower Bound:            %.6f\n", ci_lower);
+    printf("  Upper Bound:            %.6f\n", ci_upper);
+    printf("  Margin of Error:        ±%.6f\n", margin_of_error);
+    printf("  Relative Width:         ±%.4f%%\n", 100.0f * margin_of_error / mean);
+    printf("\n");
 
     printf("\n");
     printf("Sample Distribution:\n");
