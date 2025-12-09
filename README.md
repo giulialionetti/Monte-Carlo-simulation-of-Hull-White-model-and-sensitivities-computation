@@ -183,4 +183,4 @@ Q3: Sensitivity         2.06         509
 **Authors**: Giulia Lionetti, Francesco Zattoni  
 **Institution**: Sorbonne Université  
 **Course**: Advanced High Performance Computing Algorithms and Programming Many-Core Architectures  
-**Academic Year**: 2024-2025
+**Academic Year**: 2025-2026
