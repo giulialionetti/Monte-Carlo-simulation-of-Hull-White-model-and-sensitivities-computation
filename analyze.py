@@ -10,6 +10,52 @@ import pandas as pd
 import os
 import sys
 
+def load_path_data():
+    """Helper to load and shape the path data."""
+    N_STEPS = 1000
+    N_SHOW_PATHS = 32
+    PATH_LEN = N_STEPS + 1
+    FILENAME = 'data/r_paths.bin'
+    
+    try:
+        raw_data = np.fromfile(FILENAME, dtype=np.float32)
+        if raw_data.size != N_SHOW_PATHS * PATH_LEN:
+            print(f"Error: Data mismatch. Expected {N_SHOW_PATHS*PATH_LEN}, got {raw_data.size}")
+            return None, None, None
+            
+        paths = raw_data.reshape((N_SHOW_PATHS, PATH_LEN))
+        t = np.linspace(0, 10.0, PATH_LEN) # T_FINAL = 10.0
+        return paths, t, N_SHOW_PATHS
+    except FileNotFoundError:
+        print(f"Error: {FILENAME} not found. Run Q1 first.")
+        return None, None, None
+
+def plot_paths_static(show=True):
+    """Generates a high-quality static image of all paths."""
+    print("\n=== Generating Static Image ===")
+    paths, t, n_paths = load_path_data()
+    if paths is None: return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    for i in range(n_paths):
+        ax.plot(t, paths[i], lw=1, alpha=0.6)
+        
+    ax.set_xlabel('Time (years)')
+    ax.set_ylabel('Short Rate r(t)')
+    ax.set_title(f'Hull-White Monte Carlo Paths (N={n_paths})')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 10.0)
+    
+    outfile = 'plots/r_paths.png'
+    plt.savefig(outfile, dpi=300, bbox_inches='tight')
+    print(f"Saved {outfile}")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
 def plot_P_and_f(show=True):
     """Plot zero-coupon bond prices and forward rates."""
     print("\n=== Plotting P(0,T) and f(0,T) curves ===")
@@ -310,6 +356,7 @@ def main():
     print("="*80)
     
     # Generate all plots
+    plot_paths_static(show=show_plots)
     plot_P_and_f(show=show_plots)
     plot_theta_recovery(show=show_plots)
     plot_sensitivity_comparison(show=show_plots)

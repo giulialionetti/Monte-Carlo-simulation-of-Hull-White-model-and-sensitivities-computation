@@ -152,6 +152,23 @@ int main() {
     fprintf(sum, "  Simulation time: %.2f ms\n", sim_ms);
     fprintf(sum, "  Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
     fclose(sum);
+
+    // Save N_SHOW_PATHS sample interest rate paths for visualization
+    const int N_SHOW_PATHS = 32; 
+    float *d_show_paths, *h_show_paths;
+    
+    cudaMalloc(&d_show_paths, N_SHOW_PATHS * (N_STEPS+1) * sizeof(float));
+    h_show_paths = (float*)malloc(N_SHOW_PATHS * (N_STEPS+1) * sizeof(float));
+    
+    simulate_paths_show<<<1, N_SHOW_PATHS>>>(d_show_paths, d_states, N_SHOW_PATHS);
+    check_cuda("simulate_paths_show");
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(h_show_paths, d_show_paths, N_SHOW_PATHS * (N_STEPS+1) * sizeof(float), cudaMemcpyDeviceToHost);
+    save_array("data/r_paths.bin", h_show_paths, N_SHOW_PATHS * (N_STEPS+1));
+    
+    cudaFree(d_show_paths);
+    free(h_show_paths);
     
     
   

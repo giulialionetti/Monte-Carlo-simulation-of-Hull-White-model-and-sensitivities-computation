@@ -420,18 +420,13 @@ __global__ void init_rng(curandState* states, unsigned long seed) {
     if (idx < N_PATHS) curand_init(seed, idx, 0, &states[idx]);
 }
 
-/**
- * Control variate approach for variance reduction.
- * 
- * Control: C = e^(-∫r dt) × P(S₁,S₂)
- * Known: E[C] = P(0,S₂) = 0.877 (from Q1)
- * 
- * Adjusted estimator: ZBC_CV = ZBC + β(E[C] - Ĉ)
- * where β = -Cov(ZBC,C)/Var(C) ≈ -1 for simplicity
- */
+
 __global__ void simulate_ZBC_control_variate(
-    float* ZBC_sum, 
-    float* control_sum,  // NEW: accumulate control variate
+    float* ZBC_sum,
+    float* control_sum,
+    float* ZBC_sq_sum,      
+    float* control_sq_sum,  
+    float* cross_prod_sum,  
     curandState* states, 
     float S1, float S2, float K,
     const float* d_P_market,
@@ -443,9 +438,15 @@ __global__ void simulate_ZBC_control_variate(
 
     __shared__ float warp_ZBC_sums[WARPS_PER_BLOCK];
     __shared__ float warp_control_sums[WARPS_PER_BLOCK];
+    __shared__ float warp_ZBC_sq_sums[WARPS_PER_BLOCK];
+    __shared__ float warp_control_sq_sums[WARPS_PER_BLOCK];
+    __shared__ float warp_cross_sums[WARPS_PER_BLOCK];
 
     float thread_ZBC = 0.0f;
     float thread_control = 0.0f;
+    float thread_ZBC_sq = 0.0f;
+    float thread_control_sq = 0.0f;
+    float thread_cross = 0.0f;
 
     if (pid < N_PATHS) {
         curandState local = states[pid];
@@ -460,14 +461,8 @@ __global__ void simulate_ZBC_control_variate(
             float G = curand_normal(&local);
             float sig_G = d_sig_st * G;
 
-            evolve_hull_white_step(
-                &r1, &integral1, drift, 
-                sig_G, d_exp_adt, d_dt
-            );
-            evolve_hull_white_step(
-                &r2, &integral2, drift, 
-                -sig_G, d_exp_adt, d_dt
-            );
+            evolve_hull_white_step(&r1, &integral1, drift, sig_G, d_exp_adt, d_dt);
+            evolve_hull_white_step(&r2, &integral2, drift, -sig_G, d_exp_adt, d_dt);
         }
         
         float P1 = compute_P_HW(S1, S2, r1, d_a, d_sigma, d_P_market, d_f_market);
@@ -476,44 +471,65 @@ __global__ void simulate_ZBC_control_variate(
         float discount1 = expf(-integral1);
         float discount2 = expf(-integral2);
         
-        // Control variate: discount * P (we know E[this] = P(0,S2))
+        
         float control1 = discount1 * P1;
         float control2 = discount2 * P2;
         
-        // Option payoff
+       
         float payoff1 = discount1 * fmaxf(P1 - K, 0.0f);
         float payoff2 = discount2 * fmaxf(P2 - K, 0.0f);
         
+       
         thread_ZBC = payoff1 + payoff2;
         thread_control = control1 + control2;
+        
+       
+        thread_ZBC_sq = payoff1 * payoff1 + payoff2 * payoff2;
+        thread_control_sq = control1 * control1 + control2 * control2;
+        thread_cross = payoff1 * control1 + payoff2 * control2;
         
         states[pid] = local;
     }
     
-    // Warp reduction for ZBC
+    // Warp reduction for all accumulators
     for (int offset = 16; offset > 0; offset >>= 1) {
         thread_ZBC += __shfl_down_sync(0xffffffff, thread_ZBC, offset);
         thread_control += __shfl_down_sync(0xffffffff, thread_control, offset);
+        thread_ZBC_sq += __shfl_down_sync(0xffffffff, thread_ZBC_sq, offset);
+        thread_control_sq += __shfl_down_sync(0xffffffff, thread_control_sq, offset);
+        thread_cross += __shfl_down_sync(0xffffffff, thread_cross, offset);
     }
     
     if (lane == 0) {
         warp_ZBC_sums[warp_id] = thread_ZBC;
         warp_control_sums[warp_id] = thread_control;
+        warp_ZBC_sq_sums[warp_id] = thread_ZBC_sq;
+        warp_control_sq_sums[warp_id] = thread_control_sq;
+        warp_cross_sums[warp_id] = thread_cross;
     }
     __syncthreads();
     
     if (warp_id == 0) {
         float warp_ZBC = (lane < WARPS_PER_BLOCK) ? warp_ZBC_sums[lane] : 0.0f;
         float warp_control = (lane < WARPS_PER_BLOCK) ? warp_control_sums[lane] : 0.0f;
+        float warp_ZBC_sq = (lane < WARPS_PER_BLOCK) ? warp_ZBC_sq_sums[lane] : 0.0f;
+        float warp_control_sq = (lane < WARPS_PER_BLOCK) ? warp_control_sq_sums[lane] : 0.0f;
+        float warp_cross = (lane < WARPS_PER_BLOCK) ? warp_cross_sums[lane] : 0.0f;
         
         for (int offset = 16; offset > 0; offset >>= 1) {
             warp_ZBC += __shfl_down_sync(0xffffffff, warp_ZBC, offset);
             warp_control += __shfl_down_sync(0xffffffff, warp_control, offset);
+            warp_ZBC_sq += __shfl_down_sync(0xffffffff, warp_ZBC_sq, offset);
+            warp_control_sq += __shfl_down_sync(0xffffffff, warp_control_sq, offset);
+            warp_cross += __shfl_down_sync(0xffffffff, warp_cross, offset);
         }
         
         if (lane == 0) {
             atomicAdd(ZBC_sum, warp_ZBC);
             atomicAdd(control_sum, warp_control);
+            atomicAdd(ZBC_sq_sum, warp_ZBC_sq);
+            atomicAdd(control_sq_sum, warp_control_sq);
+            atomicAdd(cross_prod_sum, warp_cross);
         }
     }
 }

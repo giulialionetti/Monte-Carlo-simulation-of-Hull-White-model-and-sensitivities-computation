@@ -126,4 +126,37 @@ __global__ void compute_average_and_forward(
     }
 }
 
+/**
+ * Simulates a small number of paths and records the full r(t) trajectory.
+ * 
+ * @param d_paths Output array to store simulated paths [n_paths * (N_STEPS + 1)]
+ * @param states cuRAND states for random number generation [n_paths]
+ * @param n_paths Number of paths to simulate
+ */
+__global__ void simulate_paths_show(
+    float* d_paths,      
+    curandState* states, 
+    int n_paths
+) {
+    int pid = threadIdx.x;
+    if (pid >= n_paths) return;
+
+    curandState local = states[pid];
+    float r = d_r0;
+    float integral = 0.0f;
+    
+    d_paths[pid * (N_STEPS + 1) + 0] = r;
+
+    for (int i = 1; i <= N_STEPS; i++) {
+        float drift = d_drift_table[i - 1];
+        float G = curand_normal(&local);
+        float sig_G = d_sig_st * G;
+
+        evolve_hull_white_step(&r, &integral, drift, sig_G, d_exp_adt, d_dt);
+        
+        d_paths[pid * (N_STEPS + 1) + i] = r;
+    }
+    // states[pid] = local;
+}
+
 #endif // MARKET_DATA_CUH
