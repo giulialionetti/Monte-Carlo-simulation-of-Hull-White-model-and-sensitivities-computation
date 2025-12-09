@@ -83,88 +83,121 @@ void run_theta_recovery(const float* h_P, const float* h_f,
 
 // Monte Carlo kernel for pricing European call option on zero-coupon bond was moved to common.cuh.
 
-
 float run_ZBC_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
-
-
     float S1 = 5.0f;
     float S2 = 10.0f;
     float K = expf(-0.1f);
-
-    float *d_ZBC_sum, *d_control_sum;
-    float h_ZBC, h_control;
+    
+    float *d_ZBC_sum, *d_control_sum, *d_ZBC_sq_sum, *d_control_sq_sum, *d_cross_sum;
     curandState *d_states;
-
+    
     cudaMalloc(&d_ZBC_sum, sizeof(float));
     cudaMalloc(&d_control_sum, sizeof(float));
+    cudaMalloc(&d_ZBC_sq_sum, sizeof(float));
+    cudaMalloc(&d_control_sq_sum, sizeof(float));
+    cudaMalloc(&d_cross_sum, sizeof(float));
     cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
-    check_cuda("cudaMalloc Q2b CV");
-
+    
     cudaMemset(d_ZBC_sum, 0, sizeof(float));
     cudaMemset(d_control_sum, 0, sizeof(float));
-
+    cudaMemset(d_ZBC_sq_sum, 0, sizeof(float));
+    cudaMemset(d_control_sq_sum, 0, sizeof(float));
+    cudaMemset(d_cross_sum, 0, sizeof(float));
+    
     init_rng<<<NB, NTPB>>>(d_states, time(NULL) + 54321);
     cudaDeviceSynchronize();
-
+    
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-
+    
     cudaEventRecord(start);
     simulate_ZBC_control_variate<<<NB, NTPB>>>(
-        d_ZBC_sum, d_control_sum, d_states, S1, S2, K, d_P_market, d_f_market
+        d_ZBC_sum, d_control_sum, d_ZBC_sq_sum, d_control_sq_sum, d_cross_sum,
+        d_states, S1, S2, K, d_P_market, d_f_market
     );
     cudaEventRecord(stop);
     cudaDeviceSynchronize();
-
+    
     float sim_ms;
     cudaEventElapsedTime(&sim_ms, start, stop);
-
+    
+    // Copy results back
+    float h_ZBC, h_control, h_ZBC_sq, h_control_sq, h_cross;
     cudaMemcpy(&h_ZBC, d_ZBC_sum, sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(&h_control, d_control_sum, sizeof(float), cudaMemcpyDeviceToHost);
-
-    h_ZBC /= (2.0f * N_PATHS);
-    h_control /= (2.0f * N_PATHS);
-
-    // Control variate adjustment
-    float control_dev = h_control - P0S2;
-    float ZBC_adjusted = h_ZBC - control_dev;;
-
-    printf("=== RESULTS ===\n");
-    printf("ZBC (raw):                %.8f\n", h_ZBC);
-    printf("Control mean:             %.8f\n", h_control);
-    printf("Expected control (P0S2):  %.8f\n", P0S2);
-    printf("Control deviation:        %.8f\n", control_dev);
-    printf("ZBC (control adjusted):   %.8f\n", ZBC_adjusted);
-
+    cudaMemcpy(&h_ZBC_sq, d_ZBC_sq_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_control_sq, d_control_sq_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_cross, d_cross_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    
+    int N_total = 2 * N_PATHS;
+    
+    // Compute sample means
+    float mean_ZBC = h_ZBC / N_total;
+    float mean_control = h_control / N_total;
+    
+    // Compute sample variance of control
+    float E_Y2 = h_control_sq / N_total;
+    float E_Y_sq = mean_control * mean_control;
+    float var_control = E_Y2 - E_Y_sq;
+    
+    // Compute sample covariance
+    float E_XY = h_cross / N_total;
+    float E_X_E_Y = mean_ZBC * mean_control;
+    float cov = E_XY - E_X_E_Y;
+    
+    // Optimal beta
+    float beta_optimal = cov / var_control;
+    
+    // Apply control variate with optimal beta
+    float control_adjustment = beta_optimal * (mean_control - P0S2);
+    float ZBC_adjusted = mean_ZBC - control_adjustment;
+    
+    // Theoretical variance reduction
+    float correlation = cov / (sqrtf(var_control) * sqrtf(E_Y2 - E_Y_sq));  // Approximate
+    float expected_var_reduction = 100.0f * correlation * correlation;
+    
+    printf("=== RESULTS (OPTIMAL BETA) ===\n");
+    printf("ZBC (raw):                  %.8f\n", mean_ZBC);
+    printf("Control mean:               %.8f\n", mean_control);
+    printf("Expected control (P0S2):    %.8f\n", P0S2);
+    printf("\n");
+    printf("Optimal Beta Analysis:\n");
+    printf("  Covariance(X,Y):          %.8e\n", cov);
+    printf("  Variance(Y):              %.8e\n", var_control);
+    printf("  Beta optimal:             %.6f\n", beta_optimal);
+    printf("  Correlation:              %.6f\n", correlation);
+    printf("  Expected VR:              %.2f%%\n", expected_var_reduction);
+    printf("\n");
+    printf("Control adjustment:         %.8f\n", control_adjustment);
+    printf("ZBC (optimal CV adjusted):  %.8f\n", ZBC_adjusted);
+    
     printf("\n=== Performance ===\n");
     printf("Simulation time: %.2f ms\n", sim_ms);
     printf("Throughput: %.2f M paths/sec\n", (N_PATHS * 2.0f / sim_ms) / 1000.0f);
-
-    save_q2b_json("data/q2b_results.json", ZBC_adjusted, control_dev, sim_ms, N_PATHS * 2);
-
+    
     cudaFree(d_ZBC_sum);
     cudaFree(d_control_sum);
+    cudaFree(d_ZBC_sq_sum);
+    cudaFree(d_control_sq_sum);
+    cudaFree(d_cross_sum);
     cudaFree(d_states);
-
+    
     return ZBC_adjusted;
 }
 
 void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_market,
-                                     float P0S2) {
-    printf("\n");
-    printf("=== ZBC OPTION: STATISTICAL VALIDATION ===\n");
-    printf("\n");
+                                                float P0S2) {
 
     float S1 = 5.0f, S2 = 10.0f, K = expf(-0.1f);
     const int N_RUNS = 20;
 
     float zbc_samples[N_RUNS];
     float zbc_raw_samples[N_RUNS];
-    float control_dev_samples[N_RUNS];
+    float beta_samples[N_RUNS];
+    float correlation_samples[N_RUNS];
 
     printf("Running %d independent Monte Carlo simulations...\n", N_RUNS);
-    printf("(Validating ZBC option price with control variate)\n\n");
 
     unsigned long base_seed = (unsigned long)time(NULL) * 1000000UL;
 
@@ -176,33 +209,70 @@ void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_ma
         init_rng<<<NB, NTPB>>>(d_states, seed);
         cudaDeviceSynchronize();
 
-        float *d_ZBC_sum, *d_control_sum;
+        float *d_ZBC_sum, *d_control_sum, *d_ZBC_sq_sum, *d_control_sq_sum, *d_cross_sum;
         cudaMalloc(&d_ZBC_sum, sizeof(float));
         cudaMalloc(&d_control_sum, sizeof(float));
+        cudaMalloc(&d_ZBC_sq_sum, sizeof(float));
+        cudaMalloc(&d_control_sq_sum, sizeof(float));
+        cudaMalloc(&d_cross_sum, sizeof(float));
+        
         cudaMemset(d_ZBC_sum, 0, sizeof(float));
         cudaMemset(d_control_sum, 0, sizeof(float));
+        cudaMemset(d_ZBC_sq_sum, 0, sizeof(float));
+        cudaMemset(d_control_sq_sum, 0, sizeof(float));
+        cudaMemset(d_cross_sum, 0, sizeof(float));
 
         simulate_ZBC_control_variate<<<NB, NTPB>>>(
-            d_ZBC_sum, d_control_sum, d_states, S1, S2, K, d_P_market, d_f_market
+            d_ZBC_sum, d_control_sum, d_ZBC_sq_sum, d_control_sq_sum, d_cross_sum,
+            d_states, S1, S2, K, d_P_market, d_f_market
         );
         cudaDeviceSynchronize();
 
-        float h_ZBC, h_control;
+        float h_ZBC, h_control, h_ZBC_sq, h_control_sq, h_cross;
         cudaMemcpy(&h_ZBC, d_ZBC_sum, sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(&h_control, d_control_sum, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_ZBC_sq, d_ZBC_sq_sum, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_control_sq, d_control_sq_sum, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_cross, d_cross_sum, sizeof(float), cudaMemcpyDeviceToHost);
 
-        h_ZBC /= (2.0f * N_PATHS);
-        h_control /= (2.0f * N_PATHS);
+        int N_total = 2 * N_PATHS;
+        
+       
+        float mean_ZBC = h_ZBC / N_total;
+        float mean_control = h_control / N_total;
+        
+      
+        float E_Y2 = h_control_sq / N_total;
+        float var_control = E_Y2 - mean_control * mean_control;
+        
+       
+        float E_XY = h_cross / N_total;
+        float cov = E_XY - mean_ZBC * mean_control;
+        
+       
+        float beta = cov / var_control;
+        
+      
+        float E_X2 = h_ZBC_sq / N_total;
+        float var_ZBC = E_X2 - mean_ZBC * mean_ZBC;
+        
+      
+        float correlation = cov / sqrtf(var_ZBC * var_control);
+        
+       
+        float control_adjustment = beta * (mean_control - P0S2);
+        float zbc_adjusted = mean_ZBC - control_adjustment;
 
-        float control_dev = h_control - P0S2;
-        float zbc_adjusted = h_ZBC - control_dev;
-
-        zbc_raw_samples[run] = h_ZBC;
-        control_dev_samples[run] = control_dev;
+        zbc_raw_samples[run] = mean_ZBC;
         zbc_samples[run] = zbc_adjusted;
+        beta_samples[run] = beta;
+        correlation_samples[run] = correlation;
 
         cudaFree(d_ZBC_sum);
         cudaFree(d_control_sum);
+        cudaFree(d_ZBC_sq_sum);
+        cudaFree(d_control_sq_sum);
+        cudaFree(d_cross_sum);
         cudaFree(d_states);
 
         if ((run + 1) % 5 == 0) {
@@ -210,7 +280,7 @@ void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_ma
         }
     }
 
-    // Compute statistics for adjusted ZBC
+   
     float mean = 0.0f;
     for (int i = 0; i < N_RUNS; i++) {
         mean += zbc_samples[i];
@@ -232,7 +302,7 @@ void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_ma
     float ci_upper = mean + margin_of_error;
     float cv_percent = 100.0f * std_dev / mean;
 
-    // Also compute stats for raw ZBC (without control variate)
+   
     float mean_raw = 0.0f;
     for (int i = 0; i < N_RUNS; i++) mean_raw += zbc_raw_samples[i];
     mean_raw /= N_RUNS;
@@ -245,62 +315,104 @@ void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_ma
     var_raw /= (N_RUNS - 1);
     float std_dev_raw = sqrtf(var_raw);
 
-    // Variance reduction ratio
+   
     float variance_reduction = 100.0f * (1.0f - variance / var_raw);
+    
+    
+    float mean_beta = 0.0f;
+    float mean_correlation = 0.0f;
+    for (int i = 0; i < N_RUNS; i++) {
+        mean_beta += beta_samples[i];
+        mean_correlation += correlation_samples[i];
+    }
+    mean_beta /= N_RUNS;
+    mean_correlation /= N_RUNS;
+    
+    
+    float beta_variance = 0.0f;
+    for (int i = 0; i < N_RUNS; i++) {
+        float diff = beta_samples[i] - mean_beta;
+        beta_variance += diff * diff;
+    }
+    beta_variance /= (N_RUNS - 1);
+    float beta_std = sqrtf(beta_variance);
 
-   printf("\n");
-   printf("ZBC OPTION STATISTICAL VALIDATION\n");
-   printf("\n");
-   printf("With Control Variate:\n");
-   printf("  Mean Price:             %.8f\n", mean);
-   printf("  Standard Deviation:     %.8f\n", std_dev);
-   printf("  Standard Error:         %.8f\n", std_error);
-   printf("  Coefficient of Var:     %.4f%%\n", cv_percent);
-   printf("\n");
-   printf("95%% Confidence Interval:\n");
-   printf("  Lower Bound:            %.8f\n", ci_lower);
-   printf("  Upper Bound:            %.8f\n", ci_upper);
-   printf("  Margin of Error:        ±%.8f\n", margin_of_error);
-   printf("  Relative Width:         ±%.4f%%\n", 100.0f * margin_of_error / mean);
-   printf("\n");
-   printf("Without Control Variate:\n");
-   printf("  Mean Price (raw):       %.8f\n", mean_raw);
-   printf("  Standard Deviation:     %.8f\n", std_dev_raw);
-   printf("\n");
-   printf("Variance Reduction:       %.2f%%\n", variance_reduction);
-   printf("\n");
+    printf("\nSummary of statistical analysis on ZBC option pricing:\n\n");
+    printf("Beta Control Variate Statistics:\n");
+    printf("Mean beta:              %.6f\n", mean_beta);
+    printf("Beta std dev:           %.6f\n", beta_std);
+    printf("Beta range:             [%.4f, %.4f]\n", 
+       *std::min_element(beta_samples, beta_samples + N_RUNS),
+       *std::max_element(beta_samples, beta_samples + N_RUNS));
+    printf("Mean Correlation:       %.6f\n", mean_correlation);
+    printf("\n");
+
+    printf("With Control Variate:\n");
+    printf("  Mean Price:             %.8f\n", mean);
+    printf("  Standard Deviation:     %.8f\n", std_dev);
+    printf("  Standard Error:         %.8f\n", std_error);
+    printf("  Coefficient of Var:     %.4f%%\n", cv_percent);
+    printf("\n");
+
+    printf("95%% Confidence Interval:\n");
+    printf("  Lower Bound:            %.8f\n", ci_lower);
+    printf("  Upper Bound:            %.8f\n", ci_upper);
+    printf("  Margin of Error:        ±%.8f\n", margin_of_error);
+    printf("  Relative Width:         ±%.4f%%\n", 100.0f * margin_of_error / mean);
+    printf("\n");
+
+    printf("Without Control Variate:\n");
+    printf("  Mean Price (raw):       %.8f\n", mean_raw);
+    printf("  Standard Deviation:     %.8f\n", std_dev_raw);
+    printf("\n");
+
+    printf("Variance Reduction:       %.2f%%\n", variance_reduction);
+    printf("\n");
 
     printf("\n");
-    printf("Sample Distribution (adjusted):\n");
-    printf("  Min:  %.8f\n", *std::min_element(zbc_samples, zbc_samples + N_RUNS));
-    printf("  Q1:   %.8f\n", zbc_samples[N_RUNS/4]);
-    printf("  Med:  %.8f\n", zbc_samples[N_RUNS/2]);
-    printf("  Q3:   %.8f\n", zbc_samples[3*N_RUNS/4]);
-    printf("  Max:  %.8f\n", *std::max_element(zbc_samples, zbc_samples + N_RUNS));
+    printf("Sample Distribution:\n");
+    printf("Min:  %.8f\n", *std::min_element(zbc_samples, zbc_samples + N_RUNS));
+    printf("Q1:   %.8f\n", zbc_samples[N_RUNS/4]);
+    printf("Med:  %.8f\n", zbc_samples[N_RUNS/2]);
+    printf("Q3:   %.8f\n", zbc_samples[3*N_RUNS/4]);
+    printf("Max:  %.8f\n", *std::max_element(zbc_samples, zbc_samples + N_RUNS));
 
     printf("\n");
-    printf("Interpretation:\n");
-    printf("  • 95%% confident true option price lies in [%.8f, %.8f]\n",
-           ci_lower, ci_upper);
-    printf("  • Control variate reduces variance by %.1f%%\n", variance_reduction);
-    printf("  • Pricing precision: ±%.4f%% (CV)\n", cv_percent);
-
-    // Save results
-    FILE* csv = fopen("data/zbc_bootstrap.csv", "w");
-    if (csv) {
-        fprintf(csv, "run,price_adjusted,price_raw,control_dev\n");
-        for (int i = 0; i < N_RUNS; i++) {
-            fprintf(csv, "%d,%.10f,%.10f,%.10f\n",
-                    i+1, zbc_samples[i], zbc_raw_samples[i], control_dev_samples[i]);
-        }
-        fclose(csv);
-        printf("\nSaved data/zbc_bootstrap.csv\n");
+    printf("result:\n");
+    printf("95%% confident true option price lies in [%.8f, %.8f]\n", ci_lower, ci_upper);
+    
+    if (variance_reduction > 0) {
+        printf("reduced variance by %.1f%%\n", variance_reduction);
+        printf("mean correlation of %.4f indicates %s relationship\n", 
+               mean_correlation, 
+               fabsf(mean_correlation) > 0.5f ? "strong" : "moderate");
+    } else {
+        printf("increased variance by %.1f%%\n", -variance_reduction);
+        printf("low correlation (%.4f) explains poor performance\n", mean_correlation);
+    }
+    
+    printf("pricing precision: ±%.4f%%\n", cv_percent);
+    
+    if (beta_std / fabsf(mean_beta) > 0.2f) {
+        printf("warning: beta estimates vary significantly (CV = %.1f%%)\n", 
+               100.0f * beta_std / fabsf(mean_beta));
     }
 
-    FILE* stats = fopen("data/zbc_statistics.txt", "w");
+    // Save detailed results
+    FILE* csv = fopen("data/zbc_bootstrap_optimal.csv", "w");
+    if (csv) {
+        fprintf(csv, "run,price_adjusted,price_raw,beta_optimal,correlation\n");
+        for (int i = 0; i < N_RUNS; i++) {
+            fprintf(csv, "%d,%.10f,%.10f,%.8f,%.8f\n",
+                    i+1, zbc_samples[i], zbc_raw_samples[i], 
+                    beta_samples[i], correlation_samples[i]);
+        }
+        fclose(csv);
+        printf("\nSaved data/zbc_bootstrap_optimal.csv\n");
+    }
+
+    FILE* stats = fopen("data/zbc_statistics_optimal.txt", "w");
     if (stats) {
-        fprintf(stats, "ZBC OPTION PRICE STATISTICAL VALIDATION\n");
-        fprintf(stats, "========================================\n\n");
         fprintf(stats, "Option Parameters:\n");
         fprintf(stats, "  S1 (exercise):     %.1f years\n", S1);
         fprintf(stats, "  S2 (maturity):     %.1f years\n", S2);
@@ -310,7 +422,13 @@ void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_ma
         fprintf(stats, "  Paths per run:     %d\n", N_PATHS);
         fprintf(stats, "  Independent runs:  %d\n", N_RUNS);
         fprintf(stats, "  Total samples:     %d\n", N_PATHS * N_RUNS);
-        fprintf(stats, "  Variance reduction: Control variate (P(0,S2))\n");
+        fprintf(stats, "\n");
+        fprintf(stats, "Beta Statistics:\n");
+        fprintf(stats, "  Mean beta:         %.6f\n", mean_beta);
+        fprintf(stats, "  Beta std dev:      %.6f\n", beta_std);
+        fprintf(stats, "  Beta CV:           %.2f%%\n", 100.0f * beta_std / fabsf(mean_beta));
+        fprintf(stats, "  Mean correlation:  %.6f\n", mean_correlation);
+        fprintf(stats, "  Expected VR:       %.2f%% (from ρ²)\n", 100.0f * mean_correlation * mean_correlation);
         fprintf(stats, "\n");
         fprintf(stats, "Point Estimate:\n");
         fprintf(stats, "  Mean Price:        %.8f\n", mean);
@@ -321,15 +439,12 @@ void run_zbc_statistical_validation(const float* d_P_market, const float* d_f_ma
         fprintf(stats, "  95%% CI:             [%.8f, %.8f]\n", ci_lower, ci_upper);
         fprintf(stats, "\n");
         fprintf(stats, "Control Variate Performance:\n");
-        fprintf(stats, "  Variance (with CV):    %.10e\n", variance);
-        fprintf(stats, "  Variance (without CV): %.10e\n", var_raw);
-        fprintf(stats, "  Variance Reduction:    %.2f%%\n", variance_reduction);
-        fclose(stats);
-        printf("Saved data/zbc_statistics.txt\n");
+        fprintf(stats, "  Variance (with CV):  %.10e\n", variance);
+        fprintf(stats, "  Variance (without CV):       %.10e\n", var_raw);
+        fprintf(stats, "  Variance Reduction:          %.2f%%\n", variance_reduction);
+        printf("Saved data/zbc_statistics_optimal.txt\n");
     }
 }
-
-
 
 int main() {
     select_gpu();

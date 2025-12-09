@@ -112,26 +112,59 @@ __global__ void simulate_sensitivity(
 float run_zbc_price(float S1, float S2, float K,
                     const float* d_P_market, const float* d_f_market,
                     curandState* d_states) {
-    float* d_sum, *control_sum;
-    float h_sum;
+    float *d_sum, *d_control_sum, *d_ZBC_sq_sum, *d_control_sq_sum, *d_cross_sum;
+    
     cudaMalloc(&d_sum, sizeof(float));
-    cudaMalloc(&control_sum, sizeof(float));
+    cudaMalloc(&d_control_sum, sizeof(float));
+    cudaMalloc(&d_ZBC_sq_sum, sizeof(float));
+    cudaMalloc(&d_control_sq_sum, sizeof(float));
+    cudaMalloc(&d_cross_sum, sizeof(float));
+    
     cudaMemset(d_sum, 0, sizeof(float));
-    cudaMemset(control_sum, 0, sizeof(float));
+    cudaMemset(d_control_sum, 0, sizeof(float));
+    cudaMemset(d_ZBC_sq_sum, 0, sizeof(float));
+    cudaMemset(d_control_sq_sum, 0, sizeof(float));
+    cudaMemset(d_cross_sum, 0, sizeof(float));
 
-    // Launch kernel to simulate 2*N_PATHS paths
-    // Uses NB blocks of NTPB threads each
-    simulate_ZBC_control_variate<<<NB, NTPB>>>(d_sum, control_sum, d_states, S1, S2, K, d_P_market, d_f_market);
-    // Wait for kernel to complete
+    simulate_ZBC_control_variate<<<NB, NTPB>>>(
+        d_sum, d_control_sum, d_ZBC_sq_sum, d_control_sq_sum, d_cross_sum,
+        d_states, S1, S2, K, d_P_market, d_f_market
+    );
     cudaDeviceSynchronize();
 
-    // Copy accumulated sum back to host
-    cudaMemcpy(&h_sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    float h_ZBC, h_control, h_ZBC_sq, h_control_sq, h_cross;
+    cudaMemcpy(&h_ZBC, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_control, d_control_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_ZBC_sq, d_ZBC_sq_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_control_sq, d_control_sq_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_cross, d_cross_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    
+    int N_total = 2 * N_PATHS;
+    
+    float mean_ZBC = h_ZBC / N_total;
+    float mean_control = h_control / N_total;
+    
+    float E_Y2 = h_control_sq / N_total;
+    float var_control = E_Y2 - mean_control * mean_control;
+    
+    float E_XY = h_cross / N_total;
+    float cov = E_XY - mean_ZBC * mean_control;
+    
+    float beta = cov / var_control;
+    
+    float P0S2;
+    cudaMemcpy(&P0S2, &d_P_market[N_MAT-1], sizeof(float), cudaMemcpyDeviceToHost);
+    
+    float control_adjustment = beta * (mean_control - P0S2);
+    float ZBC_adjusted = mean_ZBC - control_adjustment;
+    
     cudaFree(d_sum);
-    cudaFree(control_sum);
+    cudaFree(d_control_sum);
+    cudaFree(d_ZBC_sq_sum);
+    cudaFree(d_control_sq_sum);
+    cudaFree(d_cross_sum);
 
-    // Return Monte Carlo average: E[discounted_payoff] = sum / (2*N_PATHS)
-    return h_sum / (2*N_PATHS);
+    return ZBC_adjusted;
 }
 
 
@@ -234,7 +267,7 @@ void run_sensitivity_mc(const float* d_P_market, const float* d_f_market,
     printf("Computation:      %.2f ms\n", ms);
     printf("Throughput:       %.2f M paths/sec\n", (N_PATHS / ms) / 1000.0f);
 
-    // Estimate achieved vs peak performance
+    
     float peakOccupancy = theoreticalOccupancy / 100.0f;
     printf("Efficiency:       %.1f%% of theoretical peak\n", peakOccupancy * 100.0f);
 
