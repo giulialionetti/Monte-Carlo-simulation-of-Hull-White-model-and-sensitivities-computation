@@ -8,13 +8,13 @@ The goal of this project is to implement Monte Carlo simulation for pricing and 
 ```
 Monte Carlo Paths:     1,048,576 × 2 (antithetic variates)
 Time Steps:            1,000
-Simulation Time:       6.18 ms
-Throughput:            339 M paths/sec
+Simulation Time:       5.36 ms
+Throughput:            391 M paths/sec
 
 Validation:
-  P(0,0)  = 1.000000 
-  P(0,10) = 0.876813
-  f(0,0)  = 1.20%
+  P(0,0)  = 1.000000 ✓
+  P(0,10) = 0.876844 ✓
+  f(0,0)  = 1.21% ✓
 ```
 
 ### Q2a: Theta Calibration
@@ -22,33 +22,41 @@ Validation:
 Method:    Finite differences on forward rates
 Formula:   θ(T) = ∂f/∂T + a·f(0,T) + σ²/(2a)·(1-e^(-2aT))
 Max Error: 1.56e-03 (at T=0)
-Mean Error: 2.27e-04
+Mean Error: 2.49e-04
 Status:    SUCCESS (< 0.01 threshold)
 ```
 
-### Q2b: Option Pricing
+### Q2b: Option Pricing with Optimal Control Variate
 ```
 Option:              European call on P(5,10)
 Strike:              K = e^(-0.1) = 0.904837
-Method:              Control variate variance reduction
+Method:              Optimal beta control variate
 
-ZBC (raw):           0.03546107
-Control mean:        0.87679142
-Expected (P(0,10)):  0.87681299
-Control deviation:   -0.00002158
-ZBC (adjusted):      0.03548265
+Control Variate Analysis:
+  Beta (optimal):      0.166447 ± 0.000163
+  Correlation:         0.673
+  Variance Reduction:  +20.4%
 
-Performance:         1.67 ms, 1260 M paths/sec
+ZBC Price:           0.03549203 ± 0.00000825 (95% CI)
+Precision:           ±0.0496% (CV)
+
+Performance:         1.97 ms, 1064 M paths/sec
 ```
 
 ### Q3: Sensitivity Analysis (Vega)
 ```
 Method                      Vega        Diff from Pathwise
-Pathwise Derivative:        0.230562    ---
-Finite Difference:          0.230173    0.17%
-FD (recalibrated P,f):      0.523699    127.14%
+Pathwise Derivative:        0.229895    ---
+Finite Difference:          0.230316    0.18%
+FD (recalibrated P,f):      0.523552    127.74%
 
-Conclusion: Recalibration degrades accuracy due to accumulated 
+Statistical Validation (20 independent runs):
+  Mean Vega:           0.230189 ± 0.000260 (95% CI)
+  Precision:           ±0.24% (CV)
+  Z-score:             4.73 (statistically significant)
+
+Conclusion: Pathwise and FD agree within 0.18%. 
+            Recalibration degrades accuracy due to accumulated 
             Monte Carlo noise from re-simulating P(0,T) curves.
 ```
 
@@ -59,6 +67,8 @@ Conclusion: Recalibration degrades accuracy due to accumulated
 $$dr(t) = [\theta(t) - ar(t)]dt + \sigma dW_t$$
 
 **Parameters:** $r_0 = 0.012$, $a = 1.0$, $\sigma = 0.1$
+
+The mean-reversion parameter $a = 1.0$ pulls the short rate toward the time-dependent level $\theta(t)/a$, while $\sigma = 0.1$ controls the instantaneous volatility. The paths in Figure 1 demonstrate this mean-reverting behavior.
 
 ### Exact Discretization
 
@@ -76,18 +86,28 @@ $$B(t,T) = \frac{1 - e^{-a(T-t)}}{a}$$
 
 $$A(t,T) = \frac{P(0,T)}{P(0,t)} \exp\left[B(t,T)f(0,t) - \frac{\sigma^2(1-e^{-2at})}{4a}B(t,T)^2\right]$$
 
+### Optimal Control Variate
+
+For option payoff $X$ with control $Y = \text{discount} \cdot P(S_1, S_2)$:
+
+$$\beta^* = \frac{\text{Cov}(X,Y)}{\text{Var}(Y)} \quad $$
+
+$$X_{\text{CV}} = X - \beta^*(Y - \mathbb{E}[Y])$$
+
 ## Implementation
 
 ### Variance Reduction
 - **Antithetic Variates**: Simulate with $\pm G$ per path
-- **Control Variates**: Use $\mathbb{E}[\text{discount} \cdot P] = P(0,S_2)$
+- **Optimal Control Variates**: Empirically compute $\beta^* = \text{Cov}(X,Y)/\text{Var}(Y)$ achieving 20% variance reduction
 - **Common Random Numbers**: Shared RNG states for finite differences
+- **Statistical Validation**: 20 independent runs to quantify precision
 
 ### GPU Optimizations
 - **Warp Shuffle Reductions**: $O(\log N)$ complexity
 - **Constant Memory**: Precomputed drift tables
 - **Fast Math**: `__expf()`, `__fmaf_rn()` intrinsics
 - **100% Occupancy**: 1024 threads/block, no register spilling (32 regs/thread)
+- **Atomic Operations**: Lock-free accumulation across blocks
 
 ### Code Structure
 ```
@@ -99,8 +119,8 @@ include/
 
 src/
   ├── 1_bond_pricing.cu             # Q1: P(0,T) and f(0,T)
-  ├── 2_option_pricing.cu           # Q2: Calibration & ZBC
-  ├── 3_sensitivity_analysis.cu     # Q3: Pathwise + FD
+  ├── 2_option_pricing.cu           # Q2: Calibration & ZBC with optimal CV
+  ├── 3_sensitivity_analysis.cu     # Q3: Pathwise + FD + validation
   └── benchmark_reductions.cu       # Performance comparison
 ```
 
@@ -139,22 +159,28 @@ Active threads/SM:      2048/2048
 ### Throughput Comparison
 ```
 Task                    Time (ms)    Throughput (M paths/s)
-Q1: Bond Pricing        6.18         339
-Q2b: Option Pricing     1.67         1260
-Q3: Sensitivity         1.74         602
+Q1: Bond Pricing        5.36         391
+Q2b: Option Pricing     1.97         1064
+Q3: Sensitivity         2.06         509
 ```
 
-## Key Findings
+## Findings
 
-1. **Antithetic variates**: Effective for variance reduction with minimal overhead
-2. **Control variates**: Deviation of 0.00002 validates simulation quality
-3. **Pathwise vs FD agreement**: 0.17% difference demonstrates numerical consistency
-4. **Recalibration counterproductive**: Adding MC noise to $P(0,T)$ curves increases error from 0.17% to 127%
-5. **Warp shuffles**: Efficient reduction pattern for GPU kernels
+1. **Control variate**: Empirically determined β* = 0.166 achieved 20% variance reduction with strong correlation (ρ = 0.67), compared to -42% with naive β = 1. This 62 percentage point improvement highlights the critical importance of proper calibration for non-linear payoffs.
+
+2. **Statistical validation**: 20 independent Monte Carlo runs achieved sub-0.3% precision (CV) for all estimates, with 95% confidence intervals confirming robustness.
+
+3. **Method agreement**: Pathwise derivative and finite difference agree within 0.18%, despite statistical significance (z = 4.73) due to inherent methodological differences (tangent vs secant approximation).
+
+4. **Antithetic variates**: Effective for variance reduction with minimal computational overhead.
+
+5. **Recalibration counterproductive**: Re-simulating P(0,T) curves introduces Monte Carlo noise, increasing error from 0.18% to 127%.
+
+6. **GPU efficiency**: Achieved 100% occupancy with optimized warp shuffle reductions and zero register spilling.
 
 ---
 
 **Authors**: Giulia Lionetti, Francesco Zattoni  
 **Institution**: Sorbonne Université  
 **Course**: Advanced High Performance Computing Algorithms and Programming Many-Core Architectures  
-**Academic Year**: 2025-2026
+**Academic Year**: 2024-2025
