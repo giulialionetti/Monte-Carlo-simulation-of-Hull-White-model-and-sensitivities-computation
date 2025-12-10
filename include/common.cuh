@@ -1,19 +1,9 @@
 #ifndef COMMON_CUH
 #define COMMON_CUH
 
-/*
- * common.cuh
- * 
- * Shared definitions, constants, and utility functions for Hull-White 
- * interest rate model Monte Carlo simulation.
- * 
- * This header provides:
- * - Simulation parameters and grid configuration
- * - Hull-White model parameters (mean reversion, volatility, initial rate)
- * - GPU constant memory declarations for simulation coefficients
- * - Device functions for Hull-White analytical formulas
- * - Utility functions for GPU management and file I/O
- */
+
+ //Shared definitions, constants, and utility functions for Hull-White interest rate model Monte Carlo simulation.
+
 
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
@@ -117,15 +107,6 @@ void compute_constants() {
 
 // Utility functions for GPU management and file I/O
 
-
-
-
-/**
- * Check for CUDA errors and exit if an error occurred.
- * 
- * @param msg Context message to display with error
- */
-
 inline void check_cuda(const char* msg) {
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -133,11 +114,6 @@ inline void check_cuda(const char* msg) {
         exit(1);
     }
 }
-
-
-/**
- * Automatically selects the GPU with the most free memory.
- */
 
 inline void select_gpu() {
     int device_count;
@@ -160,13 +136,6 @@ inline void select_gpu() {
     printf("Using GPU %d (%.2f GB free)\n\n", best, max_free / 1e9);
 }
 
-/**
- * Save array to binary file.
- * 
- * @param filename Output file path
- * @param data Host array to save
- * @param n Number of floats to write
- */
 
 inline void save_array(const char* filename, float* data, int n) {
     FILE* f = fopen(filename, "wb");
@@ -178,14 +147,6 @@ inline void save_array(const char* filename, float* data, int n) {
     fclose(f);
     printf("Saved %s (%d floats)\n", filename, n);
 }
-
-/**
- * Load array from binary file.
- * 
- * @param filename Input file path
- * @param data Host array to populate
- * @param n Number of floats to read
- */
 
 inline void load_array(const char* filename, float* data, int n) {
     FILE* f = fopen(filename, "rb");
@@ -203,56 +164,12 @@ inline void load_array(const char* filename, float* data, int n) {
     printf("Loaded %s (%d floats)\n", filename, n);
 }
 
-/**
- * Load market data (P and f) from host arrays to device arrays.
- * 
- * @param h_P Host array for P(0,T)
- * @param h_f Host array for f(0,T)
- * @param d_P Pointer to device array for P(0,T)
- * @param d_f Pointer to device array for f(0,T)
- */
 void load_market_data_to_device(float h_P[N_MAT], float h_f[N_MAT], float** d_P, float** d_f) { 
     cudaMalloc(d_P, N_MAT * sizeof(float));
     cudaMalloc(d_f, N_MAT * sizeof(float));
     cudaMemcpy(*d_P, h_P, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(*d_f, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
 }
-
-/* DEVICE FUNCTIONS
- * 
- * These inline device functions are used in CUDA kernels for:
- * - Hull-White model theta function (piecewise linear)
- * - Analytical zero-coupon bond pricing formulas
- * - Linear interpolation for market data
- * */
-
-
- /**
- * Hull-White B(t,T) function: (1 - e^(-a(T-t))) / a
- * 
- * Used in the analytical zero-coupon bond pricing formula.
- * Represents the sensitivity of bond price to interest rate changes.
- * 
- * @param t Current time
- * @param T Maturity time
- * @param a Mean reversion speed
- * @return B(t,T) coefficient
- */
-
-__device__ inline float B_func(float t, float T, float a) {
-    return (1.0f - expf(-a * (T - t))) / a;
-}
-
-/**
- * Linear interpolation for discrete market data.
- * 
- * Used to obtain P(0,t) or f(0,t) for arbitrary t from discrete grid.
- * 
- * @param data Array of market values (P or f)
- * @param T Time to interpolate at
- * @param spacing Grid spacing between data points
- * @return Interpolated value
- */
 
 
 __device__ inline float interpolate(const float* data, float T, float spacing) {
@@ -263,20 +180,6 @@ __device__ inline float interpolate(const float* data, float T, float spacing) {
     float alpha = (T - t0) / spacing;
     return data[idx] * (1.0f - alpha) + data[idx + 1] * alpha;
 }
-
-/**
- * Hull-White A(t,T) function for zero-coupon bond pricing.
- * 
- * Analytical formula: A(t,T) = [P(0,T)/P(0,t)] * exp[B(t,T)f(0,t) - sigma^2/(4a)(1-e^(-2at))B(t,T)^2]
- * 
- * @param t Current time
- * @param T Bond maturity
- * @param a Mean reversion speed
- * @param sigma Volatility
- * @param P_market Array of market zero-coupon bond prices P(0,·)
- * @param f_market Array of market forward rates f(0,·)
- * @return A(t,T) coefficient
- */
 
 __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
                                       const float* P_market, const float* f_market) {
@@ -293,22 +196,6 @@ __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
     return ratio * expf(term2 - term3);
 }
 
-/**
- * Analytical Hull-White zero-coupon bond price: P(t,T) = A(t,T)e^(-B(t,T)r(t))
- * 
- * This closed-form solution is used in Q2b for option pricing, avoiding
- * the need to simulate bond prices explicitly.
- * 
- * @param t Current time
- * @param T Bond maturity
- * @param rt Short rate at time t
- * @param a Mean reversion speed
- * @param sigma Volatility
- * @param P_market Array of market zero-coupon bond prices P(0,·)
- * @param f_market Array of market forward rates f(0,·)
- * @return Zero-coupon bond price P(t,T)
- */
-
 __device__ inline float compute_P_HW(float t, float T, float rt, float a, float sigma,
                                       const float* P_market, const float* f_market) {
     float A = compute_A_HW(t, T, a, sigma, P_market, f_market);
@@ -317,31 +204,11 @@ __device__ inline float compute_P_HW(float t, float T, float rt, float a, float 
 }
 
 
-/**
- * Piecewise linear theta function from project equation (7).
- * 
- * θ(t) = 0.012 + 0.0014t  for t < 5
- * θ(t) = 0.014 + 0.001t   for t ≥ 5
- * 
- * @param t Time in years
- * @return Instantaneous forward rate drift
- */
-
 __host__ __device__ inline float theta_func(float t) {
     return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
 }
 
-/**
- * Evolve Hull-White short rate and integral for one time step.
- * r(t+dt) = r(t)e^(-a*dt) + drift_integral + sigma * sqrt[(1-e^(-2a*dt))/(2a)] * G
- * 
- * @param r Pointer to current short rate
- * @param integral Pointer to accumulated integral of short rate
- * @param drift Drift term for the current time step
- * @param sig_G Stochastic term (sigma * G)
- * @param exp_adt Precomputed e^{-a*dt}
- * @param dt Time step size
- */
+
 __device__ inline void evolve_hull_white_step(
     float* r, float* integral, float drift, 
     float sig_G, float exp_adt, float dt
@@ -351,18 +218,7 @@ __device__ inline void evolve_hull_white_step(
     *r = r_next;
 }
 
- /**
- * Compute numerical derivative df/dT using finite differences.
- * 
- * Uses central differences for interior points and one-sided differences
- * at boundaries for improved accuracy.
- * 
- * @param f Array of forward rates
- * @param i Index at which to compute derivative
- * @param n Array length
- * @param spacing Grid spacing dT
- * @return df/dT at index i
- */
+ 
 __device__ float compute_derivative(const float* f, int i, int n, float spacing) {
     if (i == 0) {
         return (f[1] - f[0]) / spacing;
@@ -373,13 +229,6 @@ __device__ float compute_derivative(const float* f, int i, int n, float spacing)
     }
 }
 
-/**
- * Warp-level reduction using shuffle intrinsics.
- * Reduces thread_sum across all 32 threads in a warp.
- * After this, lane 0 holds the warp sum.
- * 
- * @param thread_sum Value to reduce (modified in-place)
- */
 __device__ inline void warp_reduce(float& thread_sum) {
     #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -387,15 +236,6 @@ __device__ inline void warp_reduce(float& thread_sum) {
     }
 }
 
-/**
- * Block-level reduction from warp sums.
- * First warp reduces across all warp_sums in shared memory.
- * 
- * @param warp_sums Shared memory array of warp sums [WARPS_PER_BLOCK]
- * @param lane Thread index within warp (threadIdx.x & 31)
- * @param warp_id Warp index within block (threadIdx.x >> 5)
- * @return Block sum (valid only in lane 0 of warp 0)
- */
 __device__ inline float block_reduce(float* warp_sums, int lane, int warp_id) {
     float warp_sum = (warp_id == 0) ? 
         ((lane < WARPS_PER_BLOCK) ? warp_sums[lane] : 0.0f) : 0.0f;
@@ -406,15 +246,6 @@ __device__ inline float block_reduce(float* warp_sums, int lane, int warp_id) {
     return warp_sum;
 }
 
-/**
- * Initialize cuRAND states for Monte Carlo simulation.
- * 
- * Each thread initializes its own RNG state with a unique sequence number
- * to ensure independent random streams across parallel paths.
- * 
- * @param states Array of cuRAND states (one per path)
- * @param seed Random seed for reproducibility
- */
 __global__ void init_rng(curandState* states, unsigned long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N_PATHS) curand_init(seed, idx, 0, &states[idx]);
