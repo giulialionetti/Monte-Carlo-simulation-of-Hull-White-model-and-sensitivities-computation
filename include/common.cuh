@@ -171,6 +171,10 @@ void load_market_data_to_device(float h_P[N_MAT], float h_f[N_MAT], float** d_P,
     cudaMemcpy(*d_f, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
 }
 
+__device__ inline float B_func(float t, float T, float a) {
+    return (1.0f - expf(-a * (T - t))) / a;
+}
+
 
 __device__ inline float interpolate(const float* data, float T, float spacing) {
     int idx = (int)(T / spacing);
