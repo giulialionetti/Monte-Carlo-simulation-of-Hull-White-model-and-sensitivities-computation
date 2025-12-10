@@ -203,7 +203,7 @@ __device__ inline float compute_P_HW(float t, float T, float rt, float a, float 
     return A * expf(-B * rt);
 }
 
-
+// Hull-White model theta(t) function 
 __host__ __device__ inline float theta_func(float t) {
     return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
 }
@@ -218,14 +218,17 @@ __device__ inline void evolve_hull_white_step(
     *r = r_next;
 }
 
- 
+// used by recover_theta kernel to compute numerical derivative of forward rate curve f(T) 
+// the function uses finite difference methods adapted to positions in the array
+// the boundary cases (i=0 and i=n-1) use forward and backward difference respectively
+// to avoid accessing out-of-bounds memory
 __device__ float compute_derivative(const float* f, int i, int n, float spacing) {
-    if (i == 0) {
-        return (f[1] - f[0]) / spacing;
-    } else if (i == n - 1) {
-        return (f[i] - f[i-1]) / spacing;
-    } else {
-        return (f[i+1] - f[i-1]) / (2.0f * spacing);
+    if (i == 0) { // first element
+        return (f[1] - f[0]) / spacing; // forward difference
+    } else if (i == n - 1) { // last element
+        return (f[i] - f[i-1]) / spacing; // backward difference
+    } else { // all other cases
+        return (f[i+1] - f[i-1]) / (2.0f * spacing); // central difference
     }
 }
 
@@ -252,6 +255,9 @@ __global__ void init_rng(curandState* states, unsigned long seed) {
 }
 
 
+// function for pricing European call option on zero-coupon bond
+// using control variate technique with antithetic variates
+// beta is estimated within the kernel
 __global__ void simulate_ZBC_control_variate(
     float* ZBC_sum,
     float* control_sum,
@@ -273,48 +279,59 @@ __global__ void simulate_ZBC_control_variate(
     __shared__ float warp_control_sq_sums[WARPS_PER_BLOCK];
     __shared__ float warp_cross_sums[WARPS_PER_BLOCK];
 
-    float thread_ZBC = 0.0f;
-    float thread_control = 0.0f;
-    float thread_ZBC_sq = 0.0f;
-    float thread_control_sq = 0.0f;
-    float thread_cross = 0.0f;
+    // path accumulators initialization
+    float thread_ZBC = 0.0f; // Payoff accumulator
+    float thread_control = 0.0f; // Control variate accumulator
+    float thread_ZBC_sq = 0.0f; // Payoff squared accumulator (for variance)
+    float thread_control_sq = 0.0f; // Control variate squared accumulator (for variance)
+    float thread_cross = 0.0f; // Cross product accumulator (for covariance)
 
     if (pid < N_PATHS) {
         curandState local = states[pid];
-
+        
+        // Simulate two antithetic paths for control variate technique
         float r1 = d_r0, r2 = d_r0;
         float integral1 = 0.0f, integral2 = 0.0f;
-
+        
+        // Number of discrete time steps to reach exercise time S1
         int n_steps_S1 = (int)(S1 / d_dt);
 
+        // Evolve both paths up to S1
         for (int i = 0; i < n_steps_S1; i++) {
-            float drift = d_drift_table[i];
-            float G = curand_normal(&local);
-            float sig_G = d_sig_st * G;
+            float drift = d_drift_table[i]; // Precomputed drift term
+            float G = curand_normal(&local); // Random shock N(0,1)
+            float sig_G = d_sig_st * G; // Scaled shock for our model
 
             evolve_hull_white_step(&r1, &integral1, drift, sig_G, d_exp_adt, d_dt);
             evolve_hull_white_step(&r2, &integral2, drift, -sig_G, d_exp_adt, d_dt);
         }
+
+        // after loop both paths are at time S1 with short rates r1 and r2
         
+        // comput bond prices for both paths
         float P1 = compute_P_HW(S1, S2, r1, d_a, d_sigma, d_P_market, d_f_market);
         float P2 = compute_P_HW(S1, S2, r2, d_a, d_sigma, d_P_market, d_f_market);
         
+        // compute discount factors for both paths from 0 to S1 
+        // to bring future payoffs to time 0 (present value)
         float discount1 = expf(-integral1);
         float discount2 = expf(-integral2);
         
-        
+        // compute control variate values Y for both paths
+        // E[Y] is expected value of the discounted bond price P(0,S2) 
         float control1 = discount1 * P1;
         float control2 = discount2 * P2;
         
-       
+       // compute payoffs for both paths to estimate option price E[Xi] given
+       // that E[Yi] = P(0,S2) is known exactly from market data
         float payoff1 = discount1 * fmaxf(P1 - K, 0.0f);
         float payoff2 = discount2 * fmaxf(P2 - K, 0.0f);
         
-       
+       // sum up both antithetic contributions
         thread_ZBC = payoff1 + payoff2;
         thread_control = control1 + control2;
         
-       
+       // second moments for variance and covariance estimation
         thread_ZBC_sq = payoff1 * payoff1 + payoff2 * payoff2;
         thread_control_sq = control1 * control1 + control2 * control2;
         thread_cross = payoff1 * control1 + payoff2 * control2;
@@ -322,7 +339,7 @@ __global__ void simulate_ZBC_control_variate(
         states[pid] = local;
     }
     
-    // Warp reduction for all accumulators
+    // tree-like warp reduction for all accumulators
     for (int offset = 16; offset > 0; offset >>= 1) {
         thread_ZBC += __shfl_down_sync(0xffffffff, thread_ZBC, offset);
         thread_control += __shfl_down_sync(0xffffffff, thread_control, offset);
@@ -331,6 +348,7 @@ __global__ void simulate_ZBC_control_variate(
         thread_cross += __shfl_down_sync(0xffffffff, thread_cross, offset);
     }
     
+    // atomic addition of warp results to global memory
     if (lane == 0) {
         warp_ZBC_sums[warp_id] = thread_ZBC;
         warp_control_sums[warp_id] = thread_control;

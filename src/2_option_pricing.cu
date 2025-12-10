@@ -101,7 +101,8 @@ void run_theta_recovery(const float* h_P, const float* h_f,
     cudaFree(d_T);
 }
 
-// Monte Carlo kernel for pricing European call option on zero-coupon bond was moved to common.cuh.
+// Monte Carlo simulation for pricing European call option on zero-coupon bond (simulate_ZBC_control_variate) was moved to common.cuh.
+// to be used in 3_sensitivity_analysis.cu as well.
 
 float run_ZBC_control_variate(const float* d_P_market, const float* d_f_market, const float P0S2) {
     float S1 = 5.0f;
@@ -177,20 +178,20 @@ float run_ZBC_control_variate(const float* d_P_market, const float* d_f_market, 
     float correlation = cov / (sqrtf(var_control) * sqrtf(E_Y2 - E_Y_sq));  // Approximate
     float expected_var_reduction = 100.0f * correlation * correlation;
     
-    printf("=== RESULTS (OPTIMAL BETA) ===\n");
-    printf("ZBC (raw):                  %.8f\n", mean_ZBC);
+    printf("=== RESULTS===\n");
+    printf("ZBC (prior to control variate adjustment):%.8f\n", mean_ZBC);
     printf("Control mean:               %.8f\n", mean_control);
     printf("Expected control (P0S2):    %.8f\n", P0S2);
     printf("\n");
-    printf("Optimal Beta Analysis:\n");
-    printf("  Covariance(X,Y):          %.8e\n", cov);
-    printf("  Variance(Y):              %.8e\n", var_control);
-    printf("  Beta optimal:             %.6f\n", beta_optimal);
-    printf("  Correlation:              %.6f\n", correlation);
-    printf("  Expected VR:              %.2f%%\n", expected_var_reduction);
+    printf("Beta Analysis:\n");
+    printf("Covariance(X,Y):          %.8e\n", cov);
+    printf("Variance(Y):              %.8e\n", var_control);
+    printf("Beta optimal:             %.6f\n", beta_optimal);
+    printf("Correlation:              %.6f\n", correlation);
+    printf("Expected variance reduction:              %.2f%%\n", expected_var_reduction);
     printf("\n");
     printf("Control adjustment:         %.8f\n", control_adjustment);
-    printf("ZBC (optimal CV adjusted):  %.8f\n", ZBC_adjusted);
+    printf("ZBC (control variate adjusted):  %.8f\n", ZBC_adjusted);
     
     printf("\n=== Performance ===\n");
     printf("Simulation time: %.2f ms\n", sim_ms);
