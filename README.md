@@ -34,6 +34,7 @@ Method:              Optimal beta control variate
 
 Control Variate Analysis:
   Beta (optimal):      0.166447 ± 0.000163
+  Beta (naive):        1.0 (theoretical)
   Correlation:         0.673
   Variance Reduction:  +20.4%
 
@@ -42,7 +43,6 @@ Precision:           ±0.0496% (CV)
 
 Performance:         1.97 ms, 1064 M paths/sec
 ```
-
 ### Q3: Sensitivity Analysis (Vega)
 ```
 Method                      Vega        Diff from Pathwise
@@ -68,8 +68,6 @@ $$dr(t) = [\theta(t) - ar(t)]dt + \sigma dW_t$$
 
 **Parameters:** $r_0 = 0.012$, $a = 1.0$, $\sigma = 0.1$
 
-The mean-reversion parameter $a = 1.0$ pulls the short rate toward the time-dependent level $\theta(t)/a$, while $\sigma = 0.1$ controls the instantaneous volatility. The paths in Figure 1 demonstrate this mean-reverting behavior.
-
 ### Exact Discretization
 
 $$r(t+\Delta t) = r(t)e^{-a\Delta t} + \text{drift} + \sigma\sqrt{\frac{1-e^{-2a\Delta t}}{2a}}\,G$$
@@ -90,9 +88,10 @@ $$A(t,T) = \frac{P(0,T)}{P(0,t)} \exp\left[B(t,T)f(0,t) - \frac{\sigma^2(1-e^{-2
 
 For option payoff $X$ with control $Y = \text{discount} \cdot P(S_1, S_2)$:
 
-$$\beta^* = \frac{\text{Cov}(X,Y)}{\text{Var}(Y)} \quad $$
+$$\beta^* = \frac{\text{Cov}(X,Y)}{\text{Var}(Y)} \quad}$$
 
 $$X_{\text{CV}} = X - \beta^*(Y - \mathbb{E}[Y])$$
+
 
 ## Implementation
 
@@ -166,7 +165,7 @@ Q3: Sensitivity         2.06         509
 
 ## Findings
 
-1. **Control variate**: Empirically determined β* = 0.166 achieved 20% variance reduction with strong correlation (ρ = 0.67), compared to -42% with naive β = 1. This 62 percentage point improvement highlights the critical importance of proper calibration for non-linear payoffs.
+1. **control variate**: Empirically determined β* = 0.166 achieved 20% variance reduction with strong correlation (ρ = 0.67), compared to -42% with naive β = 1. This 62 percentage point improvement highlights the critical importance of proper calibration for non-linear payoffs.
 
 2. **Statistical validation**: 20 independent Monte Carlo runs achieved sub-0.3% precision (CV) for all estimates, with 95% confidence intervals confirming robustness.
 
@@ -183,4 +182,4 @@ Q3: Sensitivity         2.06         509
 **Authors**: Giulia Lionetti, Francesco Zattoni  
 **Institution**: Sorbonne Université  
 **Course**: Advanced High Performance Computing Algorithms and Programming Many-Core Architectures  
-**Academic Year**: 2025-2026
+**Academic Year**: 2024-2025
