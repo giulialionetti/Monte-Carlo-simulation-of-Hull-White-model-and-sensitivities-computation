@@ -7,39 +7,51 @@
 
 
 
-// Recover theta(t) from forward rates using Hull-White calibration formula.
-
-__global__ void recover_theta(const float* f,
+// this functions recovers the instantaneous short rate drift theta(T)
+// from the market forward rate curve f(T) using the calibration formula:
+// theta(T) = df/dT + a * f(T) + (sigma^2 / (2a)) * (1 - exp(-2aT))
+// and compares it to the original theta(T) piecewise linear in the model specification
+__global__ void recover_theta(const float* f, 
                               float* theta_recovered, 
                               float* theta_original,
-                              float* Ts,
-                              int n_mat) {
+                              float* Ts, 
+                              int n_mat) { // n_mat = number of maturities
+
+
+     // each thread processes multiple maturity spacings
+     // the jumps are by number of threads in the block 
+     // the kernel is launched with 1 block and N_MAT threads                          
     for (int i = threadIdx.x; i < n_mat; i += blockDim.x) {
-        float T = i * d_mat_spacing;
+        float T = i * d_mat_spacing; // d_mat_spacing is precomputed in compute_constants()
         float df_dT = compute_derivative(f, i, n_mat, d_mat_spacing);
+        // convexity accounts for the stochastic volatility in the model
         float convexity = (d_sigma * d_sigma / (2.0f * d_a)) * 
                          (1.0f - expf(-2.0f * d_a * T));
+        // apply calibration formula 
         theta_recovered[i] = df_dT + d_a * f[i] + convexity;
         theta_original[i] = theta_func(T);
-        Ts[i] = T;
+        Ts[i] = T; // saves time point for later analysis
     }
 }
 
+// this function prints a comparison table of the original and recovered theta(T)
+// along with the absolute error, and computes max and mean error statistics
 void print_theta_comparison(const float* theta_original, 
                            const float* theta_recovered, 
                            int n_mat) {
     printf("  T      theta_original   theta_recovered   error\n");
     
-    float max_error = 0.0f;
-    float sum_error = 0.0f;
+    float max_error = 0.0f; // tracks the sup error
+    float sum_error = 0.0f; // accumulates total error to compute mean
     int n_printed = 0;
 
-    for (int i = 0; i <= n_mat; i += SAVE_STRIDE) {
+    // print every SAVE_STRIDE-th entry to reduce output size
+    for (int i = 0; i <= n_mat; i += SAVE_STRIDE) { // SAVE_STRIDE defined in common.cuh
         float T = i * H_MAT_SPACING;
         float error = fabsf(theta_recovered[i] - theta_original[i]);
-        max_error = fmaxf(max_error, error);
+        max_error = fmaxf(max_error, error); // builds up the sup norm error
         sum_error += error;
-        n_printed++;
+        n_printed++; // counts number of printed entries for mean calculation
 
         printf("%5.1f    %.6f         %.6f          %.2e\n",
                T, theta_original[i], theta_recovered[i], error);
@@ -47,7 +59,9 @@ void print_theta_comparison(const float* theta_original,
     printf("\n");
 
     printf("Max error:  %.2e\n", max_error);
-    printf("Mean error: %.2e\n", sum_error / n_printed);
+    printf("Mean error: %.2e\n", sum_error / n_printed); // average error over printed entries
+    
+    // 0.01 threshold given theta(t) varies around 1%
     printf("\nRecovery: %s\n", max_error < 0.01f ? "SUCCESS" : "FAILED");
 
     save_q2a_json("data/q2a_results.json", max_error, max_error < 0.01f);
@@ -56,19 +70,25 @@ void print_theta_comparison(const float* theta_original,
 void run_theta_recovery(const float* h_P, const float* h_f,
              const float* d_P_market, const float* d_f_market) {
 
+    // host arrays
     float h_theta_recovered[N_MAT], h_theta_original[N_MAT], h_T[N_MAT];
+    // pointer to device arrays
     float* d_theta_recovered, *d_theta_original, *d_T;
+    // allocate device memory
     cudaMalloc(&d_theta_recovered, N_MAT * sizeof(float));
     cudaMalloc(&d_theta_original, N_MAT * sizeof(float));
     cudaMalloc(&d_T, N_MAT * sizeof(float));
-
+    // launch kernel to recover theta(T)
     recover_theta<<<1, N_MAT>>>(d_f_market, d_theta_recovered, d_theta_original, d_T, N_MAT);
-    check_cuda("recover_theta");
-    cudaDeviceSynchronize();
+    check_cuda("recover_theta"); // check for kernel launch errors
+    cudaDeviceSynchronize(); // wait for kernel to finish
+
+    // copy results back to host
     cudaMemcpy(h_theta_recovered, d_theta_recovered, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_theta_original, d_theta_original, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_T, d_T, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
 
+    // print comparison and error statistics
     print_theta_comparison(h_theta_original, h_theta_recovered, N_MAT);
 
     csv_write_comparison("data/theta_comparison.csv",
