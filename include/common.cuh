@@ -175,16 +175,23 @@ __device__ inline float B_func(float t, float T, float a) {
     return (1.0f - expf(-a * (T - t))) / a;
 }
 
-
+// this function retrives values from market data (bond prices, forward rates) arrays
+// at arbitrary time points using linear interpolation
+// assuming f is sampled at uniform intervals defined by spacing
 __device__ inline float interpolate(const float* data, float T, float spacing) {
-    int idx = (int)(T / spacing);
-    if (idx >= N_MAT - 1) return data[N_MAT - 1];
+    int idx = (int)(T / spacing); // determine which array segment T falls into
+    if (idx >= N_MAT - 1) // if T exceeds max maturity
+    return data[N_MAT - 1]; // return last element
     
-    float t0 = idx * spacing;
-    float alpha = (T - t0) / spacing;
+    float t0 = idx * spacing; // find time corresponding to idx
+    float alpha = (T - t0) / spacing; // calculate how far T is between t0 and t0 + spacing
+     // linear interpolation between data[idx] and data[idx + 1]
     return data[idx] * (1.0f - alpha) + data[idx + 1] * alpha;
 }
 
+// this function computes the A(t,T) component of the Hull-White bond pricing formula
+// we first compute B(t,T) using the closed-form expression
+// then retrieve P(0,T), P(0,t), and f(0,t) from market data using interpolation
 __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
                                       const float* P_market, const float* f_market) {
     float B_val = B_func(t, T, a);
@@ -193,11 +200,11 @@ __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
     float P0t = interpolate(P_market, t, H_MAT_SPACING);
     float f0t = interpolate(f_market, t, H_MAT_SPACING);
     
-    float ratio = P0T / P0t;
-    float term2 = B_val * f0t;
-    float term3 = (sigma * sigma / (4.0f * a)) * (1.0f - expf(-2.0f * a * t)) * B_val * B_val;
+    float ratio = P0T / P0t; // forward discount factor from t to T
+    float term2 = B_val * f0t; // adjust for the expected drift of the short rate
+    float term3 = (sigma * sigma / (4.0f * a)) * (1.0f - expf(-2.0f * a * t)) * B_val * B_val; // convexity adjustment
     
-    return ratio * expf(term2 - term3);
+    return ratio * expf(term2 - term3); // combine all and return A(t,T)
 }
  
 __device__ inline float compute_P_HW(float t, float T, float rt, float a, float sigma,
