@@ -18,6 +18,7 @@ __device__ float compute_dP_dsigma(float S1, float S2, float P_S1_S2, float d_si
     return - P_S1_S2 * B * (sigma / (2.0f * a) * one_minus_exp * B + d_sigma_r_S1);
 }
 
+// Kernel to simulate sensitivity using pathwise derivative method
 __global__ void simulate_sensitivity(
     float* sens_sum, 
     curandState* states, 
@@ -35,19 +36,21 @@ __global__ void simulate_sensitivity(
     if (pid < N_PATHS) {
         curandState local = states[pid];
 
+        // initialize processes
         float r = d_r0;
-        float d_sigma_r = 0.0f; // This is partial_sigma r(t), starts at 0
+        float d_sigma_r = 0.0f; 
 
-        float int_r = 0.0f; // Integral of r(s) ds
-        float int_d_sigma_r = 0.0f; // Integral of partial_sigma r(s) ds
+        float int_r = 0.0f; // Integral of r(s) ds to compute discount factor
+        float int_d_sigma_r = 0.0f; // Integral of partial_sigma r(s) ds for the sensitivity of the discount factor
 
         int n_steps_S1 = (int)(S1 / d_dt);
 
         for (int i = 1; i <= n_steps_S1; i++) {
             float drift_r = d_drift_table[i - 1];
-            float drift_d_sigma_r = d_sigma_drift_table[i - 1]; // The specific drift for sensitivity process
+            float drift_d_sigma_r = d_sigma_drift_table[i - 1]; 
             float G = curand_normal(&local);
-
+            
+            // both processes use the same G because they're driven by the same Brownian motion
             evolve_hull_white_step(   // function in common.cuh
                 &r, &int_r, drift_r,
                 d_sig_st * G, d_exp_adt, d_dt
@@ -64,12 +67,13 @@ __global__ void simulate_sensitivity(
         // Calculate Discount Factor
         float discount = expf(-int_r);
 
-        // Calculate Term 1: dP/dsigma * discount * Indicator(P > K)
+        
+        // how volatility affects bond price at S1
         float term1 = (P_val > K) ?
                       compute_dP_dsigma(S1, S2, P_val, d_sigma_r, d_a, d_sigma) * discount
                       : 0.0f;
 
-        // Calculate Term 2: (Integral(partial_sigma r(t))) * discount * (P - K)+
+        // how volatility affects discounting
         float payoff = fmaxf(P_val - K, 0.0f);
         float term2 = int_d_sigma_r * discount * payoff;
 
