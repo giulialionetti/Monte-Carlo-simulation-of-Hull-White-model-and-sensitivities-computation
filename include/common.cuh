@@ -199,7 +199,7 @@ __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
     
     return ratio * expf(term2 - term3);
 }
-
+ 
 __device__ inline float compute_P_HW(float t, float T, float rt, float a, float sigma,
                                       const float* P_market, const float* f_market) {
     float A = compute_A_HW(t, T, a, sigma, P_market, f_market);
