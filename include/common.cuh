@@ -66,11 +66,15 @@ void compute_drift_tables(float sigma) {
     for (int i = 0; i < N_STEPS; i++) {
         float s = i * H_DT;
         float t = (i + 1) * H_DT;
-
+       
+        // first term with 1/a factored out later
+        // this is the result of integrating e^{-a(t - u)} * u du from s to t 
+        // it arises from theta(u)= alpha + beta*u which solved by parts, leading to the expression below
         float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
         h_drift[i] = (s < 5.0f) ? 
             (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
             (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
+        
         
         float sigma_term = (2.0f * sigma * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
         h_sigma_drift[i] = sigma_term / (H_A * H_A);
@@ -171,20 +175,29 @@ void load_market_data_to_device(float h_P[N_MAT], float h_f[N_MAT], float** d_P,
     cudaMemcpy(*d_f, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
 }
 
+// this function computes the B(t,T) component of the Hull-White bond pricing formula
+// using the closed-form expression
 __device__ inline float B_func(float t, float T, float a) {
     return (1.0f - expf(-a * (T - t))) / a;
 }
 
-
+// this function retrives values from market data (bond prices, forward rates) arrays
+// at arbitrary time points using linear interpolation
+// assuming f is sampled at uniform intervals defined by spacing
 __device__ inline float interpolate(const float* data, float T, float spacing) {
-    int idx = (int)(T / spacing);
-    if (idx >= N_MAT - 1) return data[N_MAT - 1];
+    int idx = (int)(T / spacing); // determine which array segment T falls into
+    if (idx >= N_MAT - 1) // if T exceeds max maturity
+    return data[N_MAT - 1]; // return last element
     
-    float t0 = idx * spacing;
-    float alpha = (T - t0) / spacing;
+    float t0 = idx * spacing; // find time corresponding to idx
+    float alpha = (T - t0) / spacing; // calculate how far T is between t0 and t0 + spacing
+     // linear interpolation between data[idx] and data[idx + 1]
     return data[idx] * (1.0f - alpha) + data[idx + 1] * alpha;
 }
 
+// this function computes the A(t,T) component of the Hull-White bond pricing formula
+// we first compute B(t,T) using the closed-form expression
+// then retrieve P(0,T), P(0,t), and f(0,t) from market data using interpolation
 __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
                                       const float* P_market, const float* f_market) {
     float B_val = B_func(t, T, a);
@@ -193,18 +206,22 @@ __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
     float P0t = interpolate(P_market, t, H_MAT_SPACING);
     float f0t = interpolate(f_market, t, H_MAT_SPACING);
     
-    float ratio = P0T / P0t;
-    float term2 = B_val * f0t;
-    float term3 = (sigma * sigma / (4.0f * a)) * (1.0f - expf(-2.0f * a * t)) * B_val * B_val;
+    float ratio = P0T / P0t; // forward discount factor from t to T
+    float term2 = B_val * f0t; // adjust for the expected drift of the short rate
+    float term3 = (sigma * sigma / (4.0f * a)) * (1.0f - expf(-2.0f * a * t)) * B_val * B_val; // convexity adjustment
     
-    return ratio * expf(term2 - term3);
+    return ratio * expf(term2 - term3); // combine all and return A(t,T)
 }
 
+// Hull-White bond pricing formula P(t,T) = A(t,T) * exp(-B(t,T)*r_t)
+// where A(t,T) and B(t,T) are computed as per above functions
+// r_t is the short rate at time t 
+// P_market and f_market are arrays of market bond prices and forward rates
 __device__ inline float compute_P_HW(float t, float T, float rt, float a, float sigma,
                                       const float* P_market, const float* f_market) {
     float A = compute_A_HW(t, T, a, sigma, P_market, f_market);
     float B = B_func(t, T, a);
-    return A * expf(-B * rt);
+    return A * expf(-B * rt); // start with A(t,T) and discount by exp(-B(t,T)*r_t)
 }
 
 // Hull-White model theta(t) function 
@@ -212,7 +229,11 @@ __host__ __device__ inline float theta_func(float t) {
     return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
 }
 
-
+// exp_adt is e^{-adt} and sig_G is sigma*sqrt[(1-e^{-2adt})/(2a)]*G
+// drift is the precomputed integral drift (see compute_drift_tables function)
+// computes exact exponential integration to the deterministic part of the SDE
+// then adds the stochastic shock
+// updates the short rate r and the integral of r over the time step dt
 __device__ inline void evolve_hull_white_step(
     float* r, float* integral, float drift, 
     float sig_G, float exp_adt, float dt

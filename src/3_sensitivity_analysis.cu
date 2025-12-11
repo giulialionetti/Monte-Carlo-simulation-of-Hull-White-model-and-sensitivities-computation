@@ -2,26 +2,23 @@
 #include "output.cuh"
 #include "market_data.cuh"
 #include <algorithm>
-/*
- * Hull-White Model: Sensitivity Analysis:
- * 1. Compute sensitivity of ZBC option w.r.t sigma
- * 2. Compare with Finite Difference approximation
- */
 
-// Analytical derivative of Bond Price P(S1, S2) with respect to sigma: partial_sigma P(S1, S2)
+
+
+
+// Analytical derivative of Bond Price P(S1, S2) with respect to volatility
+// S1 is the bond start time, S2 is the bond maturity
+// P_S1_S2 is the bond price at S1 for maturity S2 and it is passed to avoid recomputation
+// d_sigma_r_S1 is the partial derivative of the short rate r at time S1 with respect to sigma
+// a is the Hull-White mean reversion rate
+// sigma is the Hull-White volatility
 __device__ float compute_dP_dsigma(float S1, float S2, float P_S1_S2, float d_sigma_r_S1, float a, float sigma) {
     float B = (1.0f - expf(-a * (S2 - S1))) / a;
-    float one_minus_exp = 1.0f - expf(-2.0f * a * S2);
+    float one_minus_exp = 1.0f - expf(-2.0f * a * S1); // variance factor component
     return - P_S1_S2 * B * (sigma / (2.0f * a) * one_minus_exp * B + d_sigma_r_S1);
 }
 
-/**
- * Kernel for Sensitivity (Monte Carlo).
- * * Simulates:
- * 1. r(t): Short rate
- * 2. partial_sigma r(t): Sensitivity process
- * * Computes: E [ dP_dsigma * discount * Ind(P>K)  -  (Integral(partial_sigma r(t))) * discount * (P-K)+ ]
- */
+// Kernel to simulate sensitivity using pathwise derivative method
 __global__ void simulate_sensitivity(
     float* sens_sum, 
     curandState* states, 
@@ -39,20 +36,22 @@ __global__ void simulate_sensitivity(
     if (pid < N_PATHS) {
         curandState local = states[pid];
 
+        // initialize processes
         float r = d_r0;
-        float d_sigma_r = 0.0f; // This is partial_sigma r(t), starts at 0
+        float d_sigma_r = 0.0f; 
 
-        float int_r = 0.0f; // Integral of r(s) ds
-        float int_d_sigma_r = 0.0f; // Integral of partial_sigma r(s) ds
+        float int_r = 0.0f; // Integral of r(s) ds to compute discount factor
+        float int_d_sigma_r = 0.0f; // Integral of partial_sigma r(s) ds for the sensitivity of the discount factor
 
         int n_steps_S1 = (int)(S1 / d_dt);
 
         for (int i = 1; i <= n_steps_S1; i++) {
             float drift_r = d_drift_table[i - 1];
-            float drift_d_sigma_r = d_sigma_drift_table[i - 1]; // The specific drift for sensitivity process
+            float drift_d_sigma_r = d_sigma_drift_table[i - 1]; 
             float G = curand_normal(&local);
-
-            evolve_hull_white_step(
+            
+            // both processes use the same G because they're driven by the same Brownian motion
+            evolve_hull_white_step(   // function in common.cuh
                 &r, &int_r, drift_r,
                 d_sig_st * G, d_exp_adt, d_dt
             );
@@ -68,16 +67,16 @@ __global__ void simulate_sensitivity(
         // Calculate Discount Factor
         float discount = expf(-int_r);
 
-        // Calculate Term 1: dP/dsigma * discount * Indicator(P > K)
+        
+        // how volatility affects bond price at S1
         float term1 = (P_val > K) ?
                       compute_dP_dsigma(S1, S2, P_val, d_sigma_r, d_a, d_sigma) * discount
                       : 0.0f;
 
-        // Calculate Term 2: (Integral(partial_sigma r(t))) * discount * (P - K)+
+        // how volatility affects discounting
         float payoff = fmaxf(P_val - K, 0.0f);
         float term2 = int_d_sigma_r * discount * payoff;
 
-        // Result = E[ Term1 - Term2 ]
         thread_sum = term1 - term2;
 
         states[pid] = local;
@@ -97,8 +96,7 @@ __global__ void simulate_sensitivity(
 }
 
 /**
- * Helper Function: Price ZBC Option
- *
+ * 
  * Launches the simple ZBC pricing kernel and returns the Monte Carlo estimate.
  * Used by the finite difference method to compute option prices at different
  * volatility levels.
@@ -738,7 +736,7 @@ int main() {
     float sens_fd_new;
 
     run_finite_difference_recalibrated(d_states, &sens_fd_new);
-printf("\n");
+    printf("\n");
     int c;
     while ((c = getchar()) != '\n' && c != EOF);
     printf("Run statistical validation (20 runs)? (y/n): ");
