@@ -66,11 +66,15 @@ void compute_drift_tables(float sigma) {
     for (int i = 0; i < N_STEPS; i++) {
         float s = i * H_DT;
         float t = (i + 1) * H_DT;
-
+       
+        // first term with 1/a factored out later
+        // this is the result of integrating e^{-a(t - u)} * u du from s to t 
+        // it arises from theta(u)= alpha + beta*u which solved by parts, leading to the expression below
         float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
         h_drift[i] = (s < 5.0f) ? 
             (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
             (0.001f * first_term + 0.014f * h_one_minus_exp_adt_over_a);
+        
         
         float sigma_term = (2.0f * sigma * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
         h_sigma_drift[i] = sigma_term / (H_A * H_A);
@@ -171,6 +175,8 @@ void load_market_data_to_device(float h_P[N_MAT], float h_f[N_MAT], float** d_P,
     cudaMemcpy(*d_f, h_f, N_MAT * sizeof(float), cudaMemcpyHostToDevice);
 }
 
+// this function computes the B(t,T) component of the Hull-White bond pricing formula
+// using the closed-form expression
 __device__ inline float B_func(float t, float T, float a) {
     return (1.0f - expf(-a * (T - t))) / a;
 }
