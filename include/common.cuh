@@ -212,7 +212,11 @@ __host__ __device__ inline float theta_func(float t) {
     return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
 }
 
-
+// exp_adt is e^{-adt} and sig_G is sigma*sqrt[(1-e^{-2adt})/(2a)]*G
+// drift is the precomputed integral drift (see compute_drift_tables function)
+// computes exact exponential integration to the deterministic part of the SDE
+// then adds the stochastic shock
+// updates the short rate r and the integral of r over the time step dt
 __device__ inline void evolve_hull_white_step(
     float* r, float* integral, float drift, 
     float sig_G, float exp_adt, float dt
