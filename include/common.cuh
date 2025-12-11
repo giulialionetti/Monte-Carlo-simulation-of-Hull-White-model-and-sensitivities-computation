@@ -206,12 +206,16 @@ __device__ inline float compute_A_HW(float t, float T, float a, float sigma,
     
     return ratio * expf(term2 - term3); // combine all and return A(t,T)
 }
- 
+
+// Hull-White bond pricing formula P(t,T) = A(t,T) * exp(-B(t,T)*r_t)
+// where A(t,T) and B(t,T) are computed as per above functions
+// r_t is the short rate at time t 
+// P_market and f_market are arrays of market bond prices and forward rates
 __device__ inline float compute_P_HW(float t, float T, float rt, float a, float sigma,
                                       const float* P_market, const float* f_market) {
     float A = compute_A_HW(t, T, a, sigma, P_market, f_market);
     float B = B_func(t, T, a);
-    return A * expf(-B * rt);
+    return A * expf(-B * rt); // start with A(t,T) and discount by exp(-B(t,T)*r_t)
 }
 
 // Hull-White model theta(t) function 
