@@ -226,7 +226,7 @@ __device__ inline float compute_P_HW(float t, float T, float rt, float a, float 
 
 // Hull-White model theta(t) function 
 __host__ __device__ inline float theta_func(float t) {
-    return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.014f + 0.001f * t);
+    return (t < 5.0f) ? (0.012f + 0.0014f * t) : (0.019f + 0.001f * t);
 }
 
 // exp_adt is e^{-adt} and sig_G is sigma*sqrt[(1-e^{-2adt})/(2a)]*G
