@@ -153,29 +153,32 @@ jobs:
       run: |
         python -c "
 
-
-# Load analyze.py module
-spec = importlib.util.spec_from_file_location('analyze', 'analyze.py')
-analyze = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(analyze)
-
-# Verify all plot functions exist
-functions = [
-    'plot_paths_static',
-    'plot_P_and_f', 
-    'plot_theta_recovery',
-    'plot_sensitivity_comparison',
-    'plot_reduction_benchmark',
-    'print_summary'
-]
-
-for func in functions:
-    if not hasattr(analyze, func):
-        print(f'Missing function: {func}')
-        sys.exit(1)
-
-print('All required functions found ✓')
-"
+    - name: Verify plot functions
+      run: |
+        python3 << 'PYTHON_SCRIPT'
+        import sys
+        import importlib.util
+        
+        spec = importlib.util.spec_from_file_location('analyze', 'analyze.py')
+        analyze = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(analyze)
+        
+        functions = [
+            'plot_paths_static',
+            'plot_P_and_f', 
+            'plot_theta_recovery',
+            'plot_sensitivity_comparison',
+            'plot_reduction_benchmark',
+            'print_summary'
+        ]
+        
+        for func in functions:
+            if not hasattr(analyze, func):
+                print(f'Missing function: {func}')
+                sys.exit(1)
+        
+        print('All required functions found ✓')
+        PYTHON_SCRIPT
 
   # Job 5: Create summary report
 report:
