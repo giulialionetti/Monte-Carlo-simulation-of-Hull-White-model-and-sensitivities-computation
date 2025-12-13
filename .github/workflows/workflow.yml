@@ -183,6 +183,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, lint, docs, validate-analysis]
     if: always()
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     
     steps:
     - name: Checkout code
@@ -204,8 +208,9 @@ jobs:
         echo "- Triggered by: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
     
     - name: Comment on PR (if applicable)
-      if: github.event_name == 'pull_request'
+      if: github.event_name == 'pull_request' && github.event.pull_request != null
       uses: actions/github-script@v7
+      continue-on-error: true
       with:
         script: |
           github.rest.issues.createComment({
@@ -214,3 +219,5 @@ jobs:
             repo: context.repo.repo,
             body: 'CI Pipeline completed. All CUDA kernels compiled successfully.'
           })
+
+
