@@ -181,7 +181,7 @@ jobs:
         PYTHON_SCRIPT
 
   # Job 5: Create summary report
-report:
+  report:
     name: Generate CI Report
     runs-on: ubuntu-latest
     needs: [build, lint, docs, validate-analysis]
