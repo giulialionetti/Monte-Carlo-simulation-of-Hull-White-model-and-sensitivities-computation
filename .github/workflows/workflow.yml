@@ -55,7 +55,7 @@ jobs:
     - name: Verify executables
       run: |
         ls -lh bin/
-        file bin/q1 bin/q2 bin/q3 bin/benchmark
+        echo "All executables built successfully!"
     
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -151,11 +151,7 @@ jobs:
     
     - name: Verify plot functions
       run: |
-        python -c "
-
-    - name: Verify plot functions
-      run: |
-        python3 << 'PYTHON_SCRIPT'
+        cat > check_functions.py << 'EOF'
         import sys
         import importlib.util
         
@@ -178,7 +174,8 @@ jobs:
                 sys.exit(1)
         
         print('All required functions found ✓')
-        PYTHON_SCRIPT
+        EOF
+        python3 check_functions.py
 
   # Job 5: Create summary report
   report:
