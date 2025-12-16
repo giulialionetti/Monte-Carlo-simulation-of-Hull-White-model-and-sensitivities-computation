@@ -52,7 +52,7 @@ __constant__ float d_mat_spacing; // Maturity spacing
 __constant__ float d_exp_adt; // e^{-adt}
 __constant__ float d_sig_st; // sigma*sqrt[(1-e^{-2adt})/(2a)]
 __constant__ float d_one_minus_exp_adt_over_a; // (1 - e^{-adt})/a
-__constant__ float d_one_minus_exp_adt_over_a_sq; // ((1 - e^{-adt})/a)^2
+__constant__ float d_one_minus_exp_adt_over_a_sq; // (1 - e^{-adt})/a^2
 __constant__ float d_drift_table[N_STEPS]; // Precomputed drift integral table
 __constant__ float d_sigma_drift_table[N_STEPS]; // Drift term in the sensitivity process
 
@@ -67,15 +67,15 @@ void compute_drift_tables(float sigma) {
         float s = i * H_DT;
         float t = (i + 1) * H_DT;
        
-        // first term with 1/a factored out later
+        
         // this is the result of integrating e^{-a(t - u)} * u du from s to t 
-        // it arises from theta(u)= alpha + beta*u which solved by parts, leading to the expression below
+        // it arises from theta(u)= alpha + beta*u which can be solved by parts 
         float first_term = ((s + H_DT) - h_exp_adt * s) / H_A - h_one_minus_exp_adt_over_a_sq;
         h_drift[i] = (s < 5.0f) ? 
             (0.0014f * first_term + 0.012f * h_one_minus_exp_adt_over_a) :
             (0.001f * first_term + 0.019f * h_one_minus_exp_adt_over_a);
         
-        
+        // for sensitivity process
         float sigma_term = (2.0f * sigma * expf(-H_A * t)) * (coshf(H_A * t) - coshf(H_A * s));
         h_sigma_drift[i] = sigma_term / (H_A * H_A);
     }
