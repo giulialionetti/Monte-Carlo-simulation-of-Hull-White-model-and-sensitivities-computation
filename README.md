@@ -88,7 +88,7 @@ $$A(t,T) = \frac{P(0,T)}{P(0,t)} \exp\left[B(t,T)f(0,t) - \frac{\sigma^2(1-e^{-2
 
 For option payoff $X$ with control $Y = \text{discount} \cdot P(S_1, S_2)$:
 
-$$\beta^* = \frac{\text{Cov}(X,Y)}{\text{Var}(Y)} \quad}$$
+$$\beta^* = \frac{\text{Cov}(X,Y)}{\text{Var}(Y)} \quad$$
 
 $$X_{\text{CV}} = X - \beta^*(Y - \mathbb{E}[Y])$$
 
